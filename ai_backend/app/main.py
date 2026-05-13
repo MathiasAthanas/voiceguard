@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import os
 
-from app.api import enroll, verify, health
+from app.api import enroll, verify, health, signaling
 
 load_dotenv()
 
@@ -26,6 +26,7 @@ app.add_middleware(
 app.include_router(health.router, prefix="/health", tags=["Health"])
 app.include_router(enroll.router, prefix="/enroll", tags=["Enrollment"])
 app.include_router(verify.router, prefix="/verify", tags=["Verification"])
+app.include_router(signaling.router, prefix="/signaling", tags=["Signaling"])
 
 # Create required directories on startup
 @app.on_event("startup")
