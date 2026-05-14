@@ -146,29 +146,6 @@ AI Backend URL:       http://YOUR_PC_IP:8000
 
 If the app was installed before this change, clear app storage or manually update both fields. Old saved settings may still point to the Node server port.
 
-## Build A Standard Release APK
-
-Use this when you want one APK that works on old and new supported Android devices:
-
-```powershell
-cd C:\Users\MICROSPACE\Desktop\matt\aiclone\voiceguard\app
-flutter build apk --release --obfuscate --split-debug-info=build\debug-info
-```
-
-The APK will be here:
-
-```text
-build\app\outputs\flutter-apk\app-release.apk
-```
-
-Keep this folder:
-
-```text
-build\debug-info
-```
-
-It is needed later if you want to decode obfuscated crash logs.
-
 ## Important Notes
 
 - All phones and the PC must be on the same local network.

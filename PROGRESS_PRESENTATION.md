@@ -167,7 +167,125 @@ Verification behavior includes:
 - Returning `verified_high`, `verified`, `uncertain`, `not_verified`, `silent`, `not_enrolled`, or `spoof_detected`.
 - Calibrated thresholds for phone-call audio, which is usually noisier and more compressed than clean microphone recordings.
 
-## 9. Flutter App Progress
+## 9. Current And Planned AI Models
+
+The project currently uses pretrained voice models for the first working version, while we are now training our own models with our own datasets.
+
+This is important because pretrained models are useful for getting the system working, but our own local datasets can improve accuracy for the real voices, phones, accents, languages, microphones, and call conditions we expect VoiceGuard to handle.
+
+### Models Used Right Now
+
+Current backend model pipeline:
+
+- `ECAPA-TDNN` for speaker verification.
+- `AASIST` for anti-spoofing when the required model weights are available.
+- Audio preprocessing and speech detection before verification.
+
+### ECAPA-TDNN
+
+ECAPA-TDNN is currently used for speaker identity verification.
+
+How it works in VoiceGuard:
+
+1. During enrollment, the backend receives one or more voice samples.
+2. ECAPA-TDNN converts each sample into a speaker embedding.
+3. If there are multiple samples, the backend averages the embeddings.
+4. The final embedding is saved as that contact's voiceprint.
+5. During a call, the backend extracts an embedding from the live audio segment.
+6. The live embedding is compared with the saved contact voiceprint.
+7. The backend returns a similarity score and a verdict such as `verified`, `uncertain`, or `not_verified`.
+
+Why we use it:
+
+- It is strong for speaker recognition.
+- It gives compact speaker embeddings.
+- It lets us compare enrolled and live voices without retraining for every new contact.
+
+### AASIST
+
+AASIST is currently used as the anti-spoofing model hook.
+
+How it works in VoiceGuard:
+
+1. The backend splits audio into usable speech segments.
+2. AASIST analyzes whether the audio looks genuine or spoofed.
+3. If spoof probability is high, the backend can return `spoof_detected`.
+4. If anti-spoofing weights are not available, the backend continues with speaker verification and reports that anti-spoofing is unavailable.
+
+Why we use it:
+
+- It is designed for detecting spoofed, replayed, synthetic, or AI-generated speech patterns.
+- It gives VoiceGuard a second layer of protection beyond speaker similarity.
+
+### CNN Model Direction
+
+We are now training CNN-based models with our own datasets.
+
+How the CNN will help:
+
+- The CNN will learn patterns from spectrogram-style audio features.
+- It can detect local voice characteristics and acoustic patterns from our dataset.
+- It is useful for classifying whether a segment belongs to the expected speaker, another speaker, or a suspicious/generated voice class.
+- It can improve accuracy on local languages, accents, microphones, and phone-call audio quality.
+
+Expected CNN flow:
+
+```text
+audio segment
+  -> preprocessing
+  -> spectrogram / log-mel features
+  -> CNN feature extraction
+  -> classification or confidence score
+  -> final verification decision
+```
+
+### LSTM Model Direction
+
+We are also training LSTM-based models with our own datasets.
+
+How the LSTM will help:
+
+- The LSTM will learn how voice features change over time.
+- It can capture speaking rhythm, timing, and sequence patterns.
+- It is useful because a caller's identity is not only in one audio frame, but also in how their voice evolves across a phrase or call segment.
+- It can improve decisions on noisy phone audio where a single short feature snapshot is not enough.
+
+Expected LSTM flow:
+
+```text
+audio segment
+  -> preprocessing
+  -> frame-level features over time
+  -> LSTM sequence learning
+  -> speaker or spoof confidence
+  -> final verification decision
+```
+
+### How CNN And LSTM Fit The Final Direction
+
+The direction is not to throw away the current working pipeline immediately. The direction is to improve it step by step:
+
+1. Keep ECAPA-TDNN and AASIST as the working baseline.
+2. Train CNN and LSTM models on our localized datasets.
+3. Compare their accuracy against the current baseline.
+4. Add the best-performing model or model combination into the backend.
+5. Use local test calls to measure real-world accuracy, not only clean recording accuracy.
+
+Possible final AI decision flow:
+
+```text
+call audio
+  -> speech detection
+  -> anti-spoofing check
+  -> ECAPA speaker similarity
+  -> CNN local-pattern confidence
+  -> LSTM time-sequence confidence
+  -> combined verdict
+```
+
+The goal is better accuracy for our actual environment, especially where generic pretrained models may not fully understand local voices, accents, languages, and call audio conditions.
+
+## 10. Flutter App Progress
 
 The app currently includes:
 
@@ -191,7 +309,7 @@ The app also has call-time voice verification logic:
 - It smooths verification results across a rolling window.
 - It avoids flipping the UI based on one noisy segment.
 
-## 10. Audio And Call Handling Progress
+## 11. Audio And Call Handling Progress
 
 Work completed around audio/calls includes:
 
@@ -206,7 +324,7 @@ Work completed around audio/calls includes:
 
 This matters because phone-call audio is much harder than normal microphone enrollment. It is compressed, noisy, sometimes echo-cancelled, and often mixed with local audio.
 
-## 11. Documentation Added
+## 12. Documentation Added
 
 New file:
 
@@ -229,7 +347,7 @@ It explains:
 
 This file is meant for teammates who need simple instructions without needing to understand the full codebase.
 
-## 12. APK Build Completed
+## 13. APK Build Completed
 
 An obfuscated universal release APK was built with:
 
@@ -249,43 +367,7 @@ The release APK size reported by Flutter was about:
 80.9 MB
 ```
 
-Important:
-
-```text
-app/build/debug-info
-```
-
-must be kept because it is needed to decode obfuscated crash logs later.
-
-## 13. Git Progress
-
-Latest pushed commit:
-
-```text
-263aef3 add fastapi signaling fallback
-```
-
-Pushed to:
-
-```text
-origin/main
-https://github.com/MathiasAthanas/voiceguard.git
-```
-
-The pushed commit includes:
-
-- FastAPI signaling fallback backend.
-- FastAPI router registration.
-- `IMPROVEMENTS.md`.
-
-Important repository note:
-
-- The local `app/` folder is currently untracked by Git in this checkout.
-- The Flutter app changes exist locally, and the APK was built from them.
-- If the app source should also live in Git, the app folder needs to be intentionally added in a separate commit.
-- The folder named `voiceguardproject not to be touched/` was left untouched.
-
-## 14. Verification Completed
+## 15. Verification Completed
 
 Checks completed:
 
@@ -303,7 +385,7 @@ Known analyzer status:
 - Full `flutter analyze` still reports older unrelated warnings and deprecation notes in existing app files.
 - The new signaling service itself analyzed cleanly.
 
-## 15. Current Direction
+## 16. Current Direction
 
 The local-development direction is:
 
@@ -329,29 +411,18 @@ For future production, the stronger direction would be:
 - Proper persistent signaling/session storage.
 - Push notifications for incoming calls when the app is backgrounded.
 
-## 16. Immediate Next Steps
+The AI-model direction is:
 
-Recommended next steps:
+```text
+Keep the current ECAPA-TDNN/AASIST baseline.
+Train CNN and LSTM models with our own localized datasets.
+Compare the models using real local call audio.
+Integrate the best-performing model combination into the FastAPI backend.
+```
 
-1. Decide whether to add the Flutter `app/` folder to Git.
-2. Install the new APK on the affected phones.
-3. Set both app URLs to `http://YOUR_PC_IP:8000`.
-4. Start only the FastAPI backend on port `8000`.
-5. Test one phone where WebSocket works and one phone where WebSocket used to fail.
-6. Confirm that fallback devices log or behave as connected through HTTP polling.
-7. Run an end-to-end VoIP call test:
-   - register both users
-   - see online user list
-   - place call
-   - answer call
-   - exchange audio
-   - verify caller voice
-   - end call cleanly
-8. Clean up old Node signaling once the FastAPI path is proven stable.
-9. Add persistent signaling storage if we need server restarts without losing online state.
-10. Prepare a hosted HTTPS/WSS deployment plan when moving beyond local Wi-Fi testing.
+This keeps the system working while we improve accuracy with data that better represents the users and environments VoiceGuard is being built for.
 
-## 17. Summary
+## 18. Summary
 
 So far, VoiceGuard has moved from a split local architecture with unreliable Node WebSocket signaling to a stronger local architecture centered on FastAPI.
 
@@ -365,5 +436,4 @@ We now have:
 - A clearer local setup guide.
 - An obfuscated release APK.
 - Backend signaling changes pushed to Git.
-
-The main remaining decision is whether the full Flutter app source should be tracked in Git, since the local repo currently treats `app/` as untracked.
+- A clear model-improvement direction using localized CNN and LSTM training.
