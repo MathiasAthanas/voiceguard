@@ -1,0 +1,11 @@
+datagroup1/
+datagroup2/
+prepared_audio/
+features/logmel/
+*.wav
+*.mp3
+*.amr
+*.m4a
+*.flac
+*.ogg
+*.npy
