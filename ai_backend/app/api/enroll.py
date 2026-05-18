@@ -13,6 +13,7 @@ router = APIRouter()
 @router.post("/")
 async def enroll_contact(
     contact_id: str = Form(...),
+    source_quality: str = Form("high"),
     audio_files: List[UploadFile] = File(...),
 ):
     """
@@ -31,7 +32,11 @@ async def enroll_contact(
             raise HTTPException(status_code=400, detail=f"Empty file: {file.filename}")
         audio_bytes_list.append(content)
 
-    result = service.enroll_contact(contact_id.strip(), audio_bytes_list)
+    result = service.enroll_contact(
+        contact_id.strip(),
+        audio_bytes_list,
+        source_quality=source_quality,
+    )
 
     if not result["success"]:
         raise HTTPException(status_code=500, detail=result.get("error", "Enrollment failed"))
