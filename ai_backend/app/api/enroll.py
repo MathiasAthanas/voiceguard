@@ -1,6 +1,7 @@
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from typing import List
 from app.services.enrollment_service import get_enrollment_service
+from app.stats_store import get_stats_store
 from app.utils.embedding_utils import (
     voiceprint_exists,
     delete_voiceprint,
@@ -39,8 +40,10 @@ async def enroll_contact(
     )
 
     if not result["success"]:
+        await get_stats_store().record_enrollment(contact_id.strip(), False)
         raise HTTPException(status_code=500, detail=result.get("error", "Enrollment failed"))
 
+    await get_stats_store().record_enrollment(contact_id.strip(), True)
     return result
 
 

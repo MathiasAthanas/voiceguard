@@ -2,6 +2,7 @@
 .env
 *.env
 !.env.example
+!ai_backend/.env
 
 # Node
 node_modules/
@@ -22,6 +23,19 @@ venv/
 ai_backend/voiceprints/
 ai_backend/weights/
 ai_backend/pretrained_models/
+ai_backend/dashboard.db
+
+# Generated release-readiness output and internal development notes
+ai_backend/docs/*
+!ai_backend/docs/RELEASE_TESTING_GUIDE.md
+MOBILE_APP_IMPROVEMENT_MILESTONES.md
+aiworks/RUN_AIWORKS_PIPELINE.md
+
+# Mobile application will be added in a later push
+/app/
+
+# Local protected copies
+voiceguardproject not to be touched/
 
 # OS/editor
 .DS_Store

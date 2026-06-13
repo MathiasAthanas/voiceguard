@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
+from app.stats_store import get_stats_store
 
 router = APIRouter()
 
@@ -130,11 +131,18 @@ class SignalingHub:
         })
 
     async def answer_call(self, payload: AnswerCallRequest) -> None:
+        async with self._lock:
+            room = dict(self._rooms.get(payload.roomId, {}))
         await self._send_to(payload.callerId, {
             "type": "call_answered",
             "roomId": payload.roomId,
             "answer": payload.answer,
         })
+        await get_stats_store().record_call_start(
+            payload.roomId,
+            room.get("caller", payload.callerId),
+            room.get("callee", "unknown"),
+        )
 
     async def reject_call(self, payload: RejectCallRequest) -> None:
         await self._send_to(payload.callerId, {
@@ -143,6 +151,7 @@ class SignalingHub:
         })
         async with self._lock:
             self._rooms.pop(payload.roomId, None)
+        await get_stats_store().record_call_end(payload.roomId)
 
     async def end_call(self, payload: EndCallRequest) -> None:
         await self._send_to(payload.targetUserId, {
@@ -151,6 +160,7 @@ class SignalingHub:
         })
         async with self._lock:
             self._rooms.pop(payload.roomId, None)
+        await get_stats_store().record_call_end(payload.roomId)
 
     async def ice_candidate(self, payload: IceCandidateRequest) -> None:
         await self._send_to(payload.targetUserId, {

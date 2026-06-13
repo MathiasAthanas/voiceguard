@@ -1,10 +1,12 @@
 import numpy as np
 
+from app.models.cnn_lstm_voiceguard import get_cnn_lstm_speaker_embedding_model
 from app.models.ecapa_tdnn import get_ecapa_model
 from app.services.audio_processor import get_audio_processor
 from app.utils.audio_utils import is_speech, load_audio_from_bytes, normalize_audio
 from app.utils.embedding_utils import (
     save_voiceprint,
+    save_secondary_voiceprint,
     voiceprint_exists,
     average_embeddings,
 )
@@ -18,6 +20,7 @@ class EnrollmentService:
 
     def __init__(self):
         self.ecapa = get_ecapa_model()
+        self.secondary = get_cnn_lstm_speaker_embedding_model()
         self.processor = get_audio_processor()
 
     def enroll_contact(
@@ -39,11 +42,14 @@ class EnrollmentService:
 
         source_quality = (source_quality or "high").lower().strip()
         is_call_time = source_quality == "low"
-        min_valid_samples = 3 if is_call_time else 1
+        # High-quality enrollment requires at least 2 samples so the
+        # consistency check is meaningful (1 sample always scores 1.0).
+        min_valid_samples = 3 if is_call_time else 2
         min_duration_seconds = 1.2 if is_call_time else 2.0
         consistency_threshold = 0.25 if is_call_time else 0.45
 
         embeddings = []
+        secondary_embeddings = []
         accepted_metrics = []
         rejected_samples = []
 
@@ -72,6 +78,14 @@ class EnrollmentService:
                 audio = self.processor.process_for_enrollment(audio_bytes)
                 embedding = self.ecapa.get_embedding(audio)
                 embeddings.append(embedding)
+                if self.secondary.available:
+                    try:
+                        secondary_embeddings.append(self.secondary.get_embedding(audio))
+                    except Exception as secondary_error:
+                        print(
+                            "Warning: Secondary speaker embedding failed "
+                            f"for sample {i + 1}: {secondary_error}"
+                        )
                 accepted_metrics.append(quality)
                 print(f"Processed sample {i + 1}/{len(audio_bytes_list)} for {contact_id}")
             except Exception as e:
@@ -116,6 +130,10 @@ class EnrollmentService:
             final_embedding = embeddings[0]
 
         save_voiceprint(contact_id, final_embedding)
+        secondary_saved = False
+        if secondary_embeddings:
+            save_secondary_voiceprint(contact_id, average_embeddings(secondary_embeddings))
+            secondary_saved = True
 
         return {
             "success": True,
@@ -125,6 +143,8 @@ class EnrollmentService:
             "consistency_score": consistency,
             "quality": accepted_metrics,
             "embedding_dim": len(final_embedding),
+            "secondary_embedding_saved": secondary_saved,
+            "secondary_embedding_available": self.secondary.available,
             "message": f"Successfully enrolled {contact_id} with {len(embeddings)} sample(s)",
         }
 

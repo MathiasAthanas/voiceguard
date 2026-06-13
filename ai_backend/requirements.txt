@@ -15,3 +15,4 @@ requests==2.31.0
 huggingface_hub>=0.20.0
 transformers>=4.40.0
 safetensors>=0.4.0
+silero-vad>=4.0
