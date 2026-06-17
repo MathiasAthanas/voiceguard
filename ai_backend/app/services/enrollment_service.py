@@ -67,7 +67,10 @@ class EnrollmentService:
                     continue
 
                 normalized = normalize_audio(raw_audio)
-                if not is_speech(normalized):
+                # Call-time audio is already VAD-filtered on the device;
+                # skip Silero and use the RMS check to avoid false rejects
+                # on codec-compressed earpiece audio.
+                if not is_speech(normalized, use_rms_only=is_call_time):
                     rejected_samples.append({
                         "sample": i + 1,
                         "reason": "no_speech",

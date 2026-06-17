@@ -71,33 +71,43 @@ def normalize_audio(audio: np.ndarray) -> np.ndarray:
     return audio
 
 
-def is_speech(audio: np.ndarray, rms_threshold: float = 0.005) -> bool:
+def is_speech(
+    audio: np.ndarray,
+    rms_threshold: float = 0.005,
+    use_rms_only: bool = False,
+) -> bool:
     """
     Detect whether the audio contains actual speech.
 
     Primary method: Silero VAD (ML-based, robust to background noise, hold
     music, and HVAC hum that would fool a plain RMS check).
-    Fallback: RMS energy threshold (used only when Silero is unavailable).
+    Fallback: RMS energy threshold (used when Silero is unavailable).
+
+    Pass use_rms_only=True for audio that has already been VAD-filtered on
+    the device (call-time segments). Running Silero on codec-compressed
+    earpiece audio produces false negatives because the signal no longer
+    resembles clean microphone speech.
     """
     if len(audio) == 0:
         return False
 
-    model = _get_silero_model()
-    if model is not None:
-        try:
-            import torch  # noqa: PLC0415
-            from silero_vad import get_speech_timestamps  # noqa: PLC0415
+    if not use_rms_only:
+        model = _get_silero_model()
+        if model is not None:
+            try:
+                import torch  # noqa: PLC0415
+                from silero_vad import get_speech_timestamps  # noqa: PLC0415
 
-            tensor = torch.FloatTensor(audio)
-            # Silero requires at least 512 samples; pad if shorter.
-            if tensor.shape[0] < 512:
-                tensor = torch.nn.functional.pad(tensor, (0, 512 - tensor.shape[0]))
-            timestamps = get_speech_timestamps(tensor, model, sampling_rate=SAMPLE_RATE)
-            return len(timestamps) > 0
-        except Exception as exc:
-            logger.warning("Silero VAD inference error, using RMS fallback: %s", exc)
+                tensor = torch.FloatTensor(audio)
+                # Silero requires at least 512 samples; pad if shorter.
+                if tensor.shape[0] < 512:
+                    tensor = torch.nn.functional.pad(tensor, (0, 512 - tensor.shape[0]))
+                timestamps = get_speech_timestamps(tensor, model, sampling_rate=SAMPLE_RATE)
+                return len(timestamps) > 0
+            except Exception as exc:
+                logger.warning("Silero VAD inference error, using RMS fallback: %s", exc)
 
-    # RMS fallback — simple energy gate
+    # RMS fallback — simple energy gate (also used directly for pre-filtered audio)
     return float(np.sqrt(np.mean(audio ** 2))) > rms_threshold
 
 

@@ -57,7 +57,10 @@ class VerificationService:
 
         audio, _log_mel, segments = self.processor.process_for_verification(audio_bytes)
 
-        if not is_speech(audio):
+        # Audio tagged as *_vad has already been VAD-filtered on the device;
+        # skip Silero to avoid false rejects on codec-compressed earpiece audio.
+        pretreated = "_vad" in media_source
+        if not is_speech(audio, use_rms_only=pretreated):
             return self._base_result(
                 contact_id=contact_id,
                 verdict="silent",

@@ -207,23 +207,29 @@ class SignalingHub:
         self._last_seen[user_id] = time.monotonic()
 
     def _is_online_locked(self, user_id: str) -> bool:
+        # A user with an open WebSocket is always reachable — don't expire them.
+        if user_id in self._websockets:
+            return True
         self._expire_stale_locked()
         return user_id in self._last_seen
 
     def _online_users_locked(self) -> List[str]:
+        # Merge WebSocket-connected users (always online) with recently-seen
+        # HTTP-polling users to build the full online list.
         self._expire_stale_locked()
-        return sorted(self._last_seen.keys())
+        return sorted(set(self._last_seen.keys()) | set(self._websockets.keys()))
 
     def _expire_stale_locked(self) -> None:
+        # Only expire HTTP-polling users (those without an open WebSocket).
+        # Stale threshold raised to 90 s to tolerate one missed poll cycle.
         now = time.monotonic()
         stale = [
             user_id
             for user_id, last_seen in self._last_seen.items()
-            if now - last_seen > 60
+            if now - last_seen > 90 and user_id not in self._websockets
         ]
         for user_id in stale:
             self._last_seen.pop(user_id, None)
-            self._websockets.pop(user_id, None)
 
 
 hub = SignalingHub()
@@ -236,6 +242,10 @@ async def websocket_signaling(websocket: WebSocket, user_id: str):
     try:
         while True:
             data = await websocket.receive_json()
+            # Refresh presence on every message so idle-but-connected users
+            # are never incorrectly marked offline by the stale-expiry logic.
+            async with hub._lock:
+                hub._touch(user_id)
             event_type = data.get("type")
             if event_type == "call_user":
                 await hub.call_user(CallUserRequest(**data))
