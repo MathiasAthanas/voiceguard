@@ -17,10 +17,11 @@ from app.utils.embedding_utils import (
 
 logger = logging.getLogger(__name__)
 
-VERIFICATION_THRESHOLD = float(os.getenv("VERIFICATION_THRESHOLD", 0.44))
+VERIFICATION_THRESHOLD = float(os.getenv("VERIFICATION_THRESHOLD", 0.35))
 HIGH_THRESHOLD = float(os.getenv("VERIFICATION_HIGH_THRESHOLD", 0.65))
-LOW_THRESHOLD = float(os.getenv("VERIFICATION_LOW_THRESHOLD", 0.28))
+LOW_THRESHOLD = float(os.getenv("VERIFICATION_LOW_THRESHOLD", 0.20))
 SECONDARY_WARNING_MARGIN = float(os.getenv("SECONDARY_WARNING_MARGIN", 0.12))
+CALL_AUDIO_CONFIDENCE_FLOOR = float(os.getenv("CALL_AUDIO_CONFIDENCE_FLOOR", 0.40))
 
 
 class VerificationService:
@@ -57,9 +58,9 @@ class VerificationService:
 
         audio, _log_mel, segments = self.processor.process_for_verification(audio_bytes)
 
-        # Audio tagged as *_vad has already been VAD-filtered on the device;
-        # skip Silero to avoid false rejects on codec-compressed earpiece audio.
-        pretreated = "_vad" in media_source
+        # VAD-filtered call audio and raw VoIP local-mic chunks can be quiet or
+        # codec-processed; use the RMS speech check to avoid false rejects.
+        pretreated = "_vad" in media_source or "voip_local_mic" in media_source
         if not is_speech(audio, use_rms_only=pretreated):
             return self._base_result(
                 contact_id=contact_id,
@@ -84,6 +85,7 @@ class VerificationService:
             secondary,
             anti_spoofing,
             contact_id,
+            media_source,
         )
 
         return {
@@ -212,6 +214,7 @@ class VerificationService:
         secondary: dict,
         anti_spoofing: dict,
         contact_id: str,
+        media_source: str = "unknown",
     ):
         primary_match = bool(primary["is_same_speaker"])
         primary_similarity = float(primary["similarity_score"])
@@ -233,14 +236,17 @@ class VerificationService:
         # test/presentation build, do not let it override speaker verification.
         # The spoof probability is still returned in the response for history
         # and dashboard review.
-        if secondary_strong_disagreement:
-            return "secondary_warning", "Primary match passed, secondary model is unsure", False
         if primary_match and primary_similarity >= HIGH_THRESHOLD:
             return "verified_high", f"Verified - This is {contact_id}", True
         if primary_match:
             if secondary_available and secondary_match:
                 return "verified", f"Likely {contact_id} - both models agree", True
             return "verified", f"Likely {contact_id}", True
+        if (
+            ("_vad" in media_source or "voip_local_mic" in media_source)
+            and float(primary["confidence"]) >= CALL_AUDIO_CONFIDENCE_FLOOR
+        ):
+            return "verified", f"Likely {contact_id} - call audio is noisy", True
         if primary_similarity < LOW_THRESHOLD:
             return "not_verified", f"Does NOT sound like {contact_id}", False
         return "uncertain", "Uncertain - audio too noisy to confirm", False

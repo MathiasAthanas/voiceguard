@@ -31,8 +31,20 @@ ai_backend/docs/*
 MOBILE_APP_IMPROVEMENT_MILESTONES.md
 aiworks/RUN_AIWORKS_PIPELINE.md
 
-# Mobile application will be added in a later push
-/app/
+# Flutter mobile app generated/local files
+app/.dart_tool/
+app/.flutter-plugins
+app/.flutter-plugins-dependencies
+app/.metadata
+app/build/
+app/android/.gradle/
+app/android/local.properties
+app/android/app/build/
+app/android/app/src/main/java/io/flutter/plugins/GeneratedPluginRegistrant.java
+app/**/*.apk
+app/**/*.aab
+app/**/*.idsig
+app/**/*.symbols
 
 # Local protected copies
 voiceguardproject not to be touched/

@@ -70,6 +70,20 @@ function handleSignaling(io, socket) {
     }
   });
 
+  // ── Audio relay ───────────────────────────────────────────────────────────
+  socket.on('audio_chunk', ({ roomId, senderUserId, data }) => {
+    const room = roomManager.getRoom(roomId);
+    if (!room) return;
+    // Prefer socket-level userId; fall back to explicit payload field so
+    // routing works regardless of how the client connected.
+    const myUserId = socket.userId || roomManager.getUserBySocket(socket.id) || senderUserId;
+    const targetUserId = room.caller === myUserId ? room.callee : room.caller;
+    const targetSocket = roomManager.getUserSocket(targetUserId);
+    if (targetSocket) {
+      io.to(targetSocket).emit('audio_chunk', { roomId, data });
+    }
+  });
+
   // ── End call ──────────────────────────────────────────────────────────────
   socket.on('end_call', ({ roomId, targetUserId }) => {
     const targetSocket = roomManager.getUserSocket(targetUserId);

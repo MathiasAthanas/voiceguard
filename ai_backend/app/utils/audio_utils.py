@@ -1,10 +1,14 @@
 import logging
 import math
+import tempfile
 import numpy as np
 import soundfile as sf
 import io
 import os
 from scipy import signal
+
+# Container formats that soundfile cannot read — routed through torchaudio+ffmpeg.
+_CONTAINER_EXTS = frozenset({'.mp4', '.m4a', '.aac', '.mp3', '.webm'})
 
 
 logger = logging.getLogger(__name__)
@@ -34,16 +38,85 @@ def _get_silero_model():
 
 
 def load_audio_from_bytes(audio_bytes: bytes, target_sr: int = SAMPLE_RATE) -> np.ndarray:
-    """Load audio from raw bytes and resample to target sample rate."""
-    buffer = io.BytesIO(audio_bytes)
-    audio, sample_rate = sf.read(buffer, dtype="float32", always_2d=False)
-    return _prepare_audio(audio, sample_rate, target_sr)
+    """Load audio from raw bytes. WAV/FLAC/OGG via soundfile; MP4/AAC via torchaudio."""
+    # Fast path: soundfile reads WAV/FLAC/OGG directly from memory.
+    try:
+        audio, sample_rate = sf.read(io.BytesIO(audio_bytes), dtype="float32", always_2d=False)
+        return _prepare_audio(audio, sample_rate, target_sr)
+    except Exception:
+        pass
+
+    # Container format (MP4/AAC from flutter_webrtc OUTPUT recorder, etc.).
+    # torchaudio needs a real file path — write to a temp file then decode.
+    suffix = _sniff_container_ext(audio_bytes)
+    fd, tmp_path = tempfile.mkstemp(suffix=suffix)
+    try:
+        os.write(fd, audio_bytes)
+        os.close(fd)
+        return _load_via_torchaudio(tmp_path, target_sr)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
 
 
 def load_audio_from_file(file_path: str, target_sr: int = SAMPLE_RATE) -> np.ndarray:
-    """Load audio from file path."""
+    """Load audio from file. WAV/FLAC/OGG via soundfile; MP4/AAC/M4A via torchaudio."""
+    ext = os.path.splitext(file_path.lower())[1]
+    if ext in _CONTAINER_EXTS:
+        return _load_via_torchaudio(file_path, target_sr)
     audio, sample_rate = sf.read(file_path, dtype="float32", always_2d=False)
     return _prepare_audio(audio, sample_rate, target_sr)
+
+
+def _load_via_torchaudio(file_path: str, target_sr: int) -> np.ndarray:
+    """Decode container audio (MP4/AAC/M4A). Uses PyAV first (ships bundled FFmpeg DLLs,
+    works on Windows without a separate ffmpeg install); falls back to torchaudio."""
+    try:
+        return _load_via_av(file_path, target_sr)
+    except Exception as av_exc:
+        logger.warning("PyAV decode failed (%s), trying torchaudio", av_exc)
+
+    import torchaudio  # noqa: PLC0415
+    # Force the ffmpeg dispatcher so torchaudio doesn't route to soundfile
+    try:
+        waveform, sample_rate = torchaudio.load(file_path, format="mp4a-latm")
+    except Exception:
+        waveform, sample_rate = torchaudio.load(file_path)
+    audio = waveform.mean(dim=0).numpy().astype(np.float32)
+    return _prepare_audio(audio, sample_rate, target_sr)
+
+
+def _load_via_av(file_path: str, target_sr: int) -> np.ndarray:
+    """Decode any audio container via PyAV (bundled FFmpeg). Works on Windows Python 3.8+."""
+    import av  # noqa: PLC0415
+    with av.open(file_path) as container:
+        stream = next((s for s in container.streams if s.type == "audio"), None)
+        if stream is None:
+            raise ValueError("No audio stream found")
+        src_sr = stream.sample_rate
+        frames = []
+        for packet in container.demux(stream):
+            for frame in packet.decode():
+                # to_ndarray with 'fltp' gives float32, shape (channels, samples)
+                arr = frame.to_ndarray(format="fltp")
+                frames.append(arr.mean(axis=0))  # mono
+    if not frames:
+        raise ValueError("No audio frames decoded")
+    audio = np.concatenate(frames).astype(np.float32)
+    return _prepare_audio(audio, src_sr, target_sr)
+
+
+def _sniff_container_ext(data: bytes) -> str:
+    """Guess the container type from magic bytes to select a temp-file extension."""
+    # MP4/M4A: 4-byte box size then 'ftyp' at offset 4
+    if len(data) >= 8 and data[4:8] == b'ftyp':
+        return '.mp4'
+    # Raw AAC ADTS: sync word 0xFFF1 (MPEG-4) or 0xFFF9 (MPEG-2)
+    if len(data) >= 2 and data[:2] in (b'\xff\xf1', b'\xff\xf9'):
+        return '.aac'
+    return '.mp4'  # flutter_webrtc AudioFileRenderer always wraps in MP4
 
 
 def _prepare_audio(audio: np.ndarray, sample_rate: int, target_sr: int) -> np.ndarray:

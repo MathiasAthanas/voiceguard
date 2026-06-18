@@ -42,6 +42,20 @@ class IceCandidateRequest(BaseModel):
     candidate: Dict[str, Any]
 
 
+class VerificationResultRequest(BaseModel):
+    roomId: str
+    targetUserId: str
+    speakerId: str
+    result: Dict[str, Any]
+
+
+class AudioChunkRequest(BaseModel):
+    roomId: str
+    senderUserId: str = ""
+    targetUserId: str = ""
+    data: str
+
+
 class SignalingHub:
     def __init__(self) -> None:
         self._lock = asyncio.Lock()
@@ -74,10 +88,19 @@ class SignalingHub:
     async def unregister(self, user_id: str, websocket: Optional[WebSocket] = None) -> None:
         async with self._lock:
             current_ws = self._websockets.get(user_id)
-            if websocket is None or current_ws is websocket:
+            is_current_connection = websocket is None or current_ws is websocket
+            if is_current_connection:
                 self._websockets.pop(user_id, None)
                 self._last_seen.pop(user_id, None)
+                closed_rooms = self._pop_rooms_for_user_locked(user_id)
+            else:
+                # A stale WebSocket for the same user closed after a newer one
+                # had already registered. Do not mark the user offline and do
+                # not tear down active rooms owned by the newer connection.
+                closed_rooms = []
             users = self._online_users_locked()
+        for room_id in closed_rooms:
+            await get_stats_store().record_call_end(room_id)
         await self._broadcast_user_list(users)
 
     async def events(self, user_id: str, timeout: int = 20) -> Dict[str, Any]:
@@ -169,14 +192,71 @@ class SignalingHub:
             "candidate": payload.candidate,
         })
 
+    async def verification_result(self, payload: VerificationResultRequest) -> None:
+        await self._send_to(payload.targetUserId, {
+            "type": "verification_result",
+            "roomId": payload.roomId,
+            "speakerId": payload.speakerId,
+            "result": payload.result,
+        })
+
+    async def relay_audio_chunk(
+        self,
+        sender_user_id: str,
+        room_id: str,
+        data: str,
+        target_user_id: str = "",
+    ) -> None:
+        async with self._lock:
+            room = self._rooms.get(room_id)
+            if not room:
+                return
+            caller = room.get("caller")
+            callee = room.get("callee")
+            members = {caller, callee}
+            if target_user_id:
+                if target_user_id not in members:
+                    return
+            elif sender_user_id == caller:
+                target_user_id = callee or ""
+            elif sender_user_id == callee:
+                target_user_id = caller or ""
+            else:
+                return
+            target_ws = self._websockets.get(target_user_id)
+
+        if target_ws is not None:
+            try:
+                await target_ws.send_json({
+                    "type": "audio_chunk",
+                    "roomId": room_id,
+                    "senderUserId": sender_user_id,
+                    "data": data,
+                })
+            except Exception:
+                pass
+        # Do not queue audio chunks for HTTP-polling clients — they would be
+        # stale by the time they are polled.
+
     async def stats(self) -> Dict[str, Any]:
         async with self._lock:
             users = self._online_users_locked()
-            return {
-                "online_users": len(users),
-                "users": users,
-                "active_rooms": len(self._rooms),
-            }
+            online = set(users)
+            closed_rooms = [
+                room_id
+                for room_id, room in self._rooms.items()
+                if room.get("caller") not in online or room.get("callee") not in online
+            ]
+            for room_id in closed_rooms:
+                self._rooms.pop(room_id, None)
+            active_rooms = len(self._rooms)
+        for room_id in closed_rooms:
+            await get_stats_store().record_call_end(room_id)
+        return {
+            "online_users": len(users),
+            "users": users,
+            "active_rooms": active_rooms,
+        }
 
     async def _send_to(self, user_id: str, event: Dict[str, Any]) -> None:
         async with self._lock:
@@ -231,6 +311,16 @@ class SignalingHub:
         for user_id in stale:
             self._last_seen.pop(user_id, None)
 
+    def _pop_rooms_for_user_locked(self, user_id: str) -> List[str]:
+        room_ids = [
+            room_id
+            for room_id, room in self._rooms.items()
+            if room.get("caller") == user_id or room.get("callee") == user_id
+        ]
+        for room_id in room_ids:
+            self._rooms.pop(room_id, None)
+        return room_ids
+
 
 hub = SignalingHub()
 
@@ -247,7 +337,14 @@ async def websocket_signaling(websocket: WebSocket, user_id: str):
             async with hub._lock:
                 hub._touch(user_id)
             event_type = data.get("type")
-            if event_type == "call_user":
+            if event_type == "ping":
+                # Keepalive — reply immediately so the client knows we're alive
+                await websocket.send_json({"type": "pong"})
+            elif event_type == "get_user_list":
+                async with hub._lock:
+                    users = hub._online_users_locked()
+                await websocket.send_json({"type": "user_list", "users": users})
+            elif event_type == "call_user":
                 await hub.call_user(CallUserRequest(**data))
             elif event_type == "answer_call":
                 await hub.answer_call(AnswerCallRequest(**data))
@@ -257,6 +354,19 @@ async def websocket_signaling(websocket: WebSocket, user_id: str):
                 await hub.end_call(EndCallRequest(**data))
             elif event_type == "ice_candidate":
                 await hub.ice_candidate(IceCandidateRequest(**data))
+            elif event_type == "verification_result":
+                await hub.verification_result(VerificationResultRequest(**data))
+            elif event_type == "audio_chunk":
+                room_id = data.get("roomId", "")
+                chunk_data = data.get("data", "")
+                target_user_id = data.get("targetUserId", "")
+                if room_id and chunk_data:
+                    await hub.relay_audio_chunk(
+                        user_id,
+                        room_id,
+                        chunk_data,
+                        target_user_id,
+                    )
     except WebSocketDisconnect:
         await hub.unregister(user_id, websocket)
     except Exception:
@@ -306,6 +416,24 @@ async def end_call(payload: EndCallRequest):
 @router.post("/ice")
 async def ice_candidate(payload: IceCandidateRequest):
     await hub.ice_candidate(payload)
+    return {"status": "ok"}
+
+
+@router.post("/verification-result")
+async def verification_result(payload: VerificationResultRequest):
+    await hub.verification_result(payload)
+    return {"status": "ok"}
+
+
+@router.post("/audio-chunk")
+async def audio_chunk_http(payload: AudioChunkRequest):
+    if payload.senderUserId and payload.roomId and payload.data:
+        await hub.relay_audio_chunk(
+            payload.senderUserId,
+            payload.roomId,
+            payload.data,
+            payload.targetUserId,
+        )
     return {"status": "ok"}
 
 

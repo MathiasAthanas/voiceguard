@@ -1,0 +1,22 @@
+// ⚠️  REQUIRED FOR FCM PUSH NOTIFICATIONS
+//
+// To enable incoming VoIP call notifications when the app is closed:
+//
+//  1. Go to https://console.firebase.google.com/
+//  2. Create a project (or use an existing one)
+//  3. Click "Add app" → Android
+//  4. Package name: com.voiceguard
+//  5. Download google-services.json
+//  6. Place it at:  voiceguard/app/android/app/google-services.json
+//     (same folder as this placeholder file)
+//  7. Delete this placeholder file
+//
+// Signaling server (for sending pushes):
+//  1. In Firebase Console → Project Settings → Service Accounts
+//  2. Click "Generate new private key" → download JSON
+//  3. Place it at:  voiceguard/server/firebase-service-account.json
+//  4. Set env var:  GOOGLE_APPLICATION_CREDENTIALS=./firebase-service-account.json
+//     (add to your server/.env file)
+//
+// The app works WITHOUT Firebase — VoIP calls simply require the app to be
+// open on the callee's phone. With Firebase, calls wake the app from any state.
