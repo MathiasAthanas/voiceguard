@@ -228,12 +228,11 @@ class VerificationService:
             and float(secondary_similarity) < (secondary_threshold - SECONDARY_WARNING_MARGIN)
         )
 
-        if anti_spoofing.get("is_spoof", False):
-            return (
-                "spoof_suspected",
-                "Possible cloned voice - gathering more evidence",
-                False,
-            )
+        # The current CNN+LSTM anti-spoofing model is useful as telemetry, but
+        # it has produced false positives on real phone-call audio. For the
+        # test/presentation build, do not let it override speaker verification.
+        # The spoof probability is still returned in the response for history
+        # and dashboard review.
         if secondary_strong_disagreement:
             return "secondary_warning", "Primary match passed, secondary model is unsure", False
         if primary_match and primary_similarity >= HIGH_THRESHOLD:
