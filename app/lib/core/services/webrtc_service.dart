@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart'
-    show Helper, RTCIceCandidate, RTCSessionDescription;
+    show RTCIceCandidate, RTCSessionDescription;
 
 import 'voip_relay_service.dart';
 
@@ -106,11 +106,11 @@ class WebRTCService extends ChangeNotifier {
   // ── Audio routing ──────────────────────────────────────────────────────────
 
   Future<void> _setNativeSpeaker(bool enabled) async {
-    try {
-      await Helper.setSpeakerphoneOn(enabled);
-    } catch (e) {
-      debugPrint('Helper.setSpeakerphoneOn error: $e');
-    }
+    // Helper.setSpeakerphoneOn is intentionally NOT called here.
+    // In relay mode we have no WebRTC peer connection, and calling flutter_webrtc's
+    // AudioManager initialiser right before _startMic() locks the Android audio
+    // session so that AudioRecord fails to open on the caller's phone.
+    // All routing is handled by the native setVoipSpeaker channel call below.
     try {
       await _channel.invokeMethod('setVoipSpeaker', {'enabled': enabled});
     } catch (e) {

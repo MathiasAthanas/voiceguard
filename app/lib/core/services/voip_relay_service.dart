@@ -41,6 +41,10 @@ class VoipRelayService {
 
   bool get isActive => _isActive;
 
+  /// Live counters — read from the UI every second to verify both ends are
+  /// sending and receiving without needing logcat.
+  (int sent, int received) get audioStats => (_sentChunks, _receivedChunks);
+
   Future<void> start(
     String roomId,
     String targetUserId,
@@ -51,8 +55,11 @@ class VoipRelayService {
     _targetUserId = targetUserId;
     _isActive = true;
 
-    await _startPlayer(signaling, roomId);
+    // Mic opens AudioRecord before flutter_sound opens AudioTrack.
+    // Reversing this order causes the caller's AudioRecord init to race
+    // against an AudioTrack that just locked the session — mic fails silently.
     await _startMic(signaling, roomId);
+    await _startPlayer(signaling, roomId);
   }
 
   Future<void> _startPlayer(SignalingService signaling, String roomId) async {

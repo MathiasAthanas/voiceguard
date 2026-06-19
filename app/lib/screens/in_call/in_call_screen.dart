@@ -112,6 +112,10 @@ class _InCallScreenState extends State<InCallScreen> {
   // ── DTMF keypad ───────────────────────────────────────────────────────────
   bool _dtmfOpen = false;
 
+  // ── VoIP audio debug counters (updated by _callTimer every second) ──────
+  int _voipSentChunks = 0;
+  int _voipRecvChunks = 0;
+
   // ── Hang-up guard ─────────────────────────────────────────────────────────
   bool _endCallCalled = false;
   bool _answeringCall = false;
@@ -339,7 +343,14 @@ class _InCallScreenState extends State<InCallScreen> {
   void _startTimer() {
     _callTimer ??= Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted) return;
-      setState(() => _callSeconds++);
+      setState(() {
+        _callSeconds++;
+        if (widget.isVoIP && _relay != null) {
+          final (s, r) = _relay!.audioStats;
+          _voipSentChunks = s;
+          _voipRecvChunks = r;
+        }
+      });
     });
   }
 
@@ -1139,6 +1150,16 @@ class _InCallScreenState extends State<InCallScreen> {
                     _enrollmentMode ? FontWeight.w600 : FontWeight.normal,
               ),
             ),
+
+            // VoIP audio flow indicator — shows chunks sent and received so
+            // both sides can confirm their mics are working without logcat.
+            if (widget.isVoIP && _callIsActive) ...[
+              const SizedBox(height: 4),
+              Text(
+                '↑ $_voipSentChunks  ↓ $_voipRecvChunks',
+                style: const TextStyle(fontSize: 10, color: Colors.white24),
+              ),
+            ],
 
             // Enrollment progress bar
             if (_enrollmentMode) ...[
