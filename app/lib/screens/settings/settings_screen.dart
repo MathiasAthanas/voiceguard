@@ -4,7 +4,9 @@ import '../../core/constants/app_colors.dart';
 import '../../core/constants/app_constants.dart';
 import '../../core/services/settings_service.dart';
 import '../../core/services/signaling_service.dart';
+import '../../core/services/shell_audio_service.dart';
 import '../../core/services/verification_service.dart';
+import '../setup/adb_audio_setup_screen.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
@@ -293,6 +295,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
           const SizedBox(height: 24),
 
+          // ── Cellular Audio ─────────────────────────────────────────────────
+          const _SectionHeader(title: 'Cellular Audio'),
+          const SizedBox(height: 12),
+          _CellularAudioTile(),
+
+          const SizedBox(height: 24),
+
           // ── About ─────────────────────────────────────────────────────────
           const _SectionHeader(title: 'About'),
           const SizedBox(height: 12),
@@ -328,6 +337,80 @@ class _SettingsScreenState extends State<SettingsScreen> {
 }
 
 // ── Sub-widgets ───────────────────────────────────────────────────────────────
+
+class _CellularAudioTile extends StatefulWidget {
+  @override
+  State<_CellularAudioTile> createState() => _CellularAudioTileState();
+}
+
+class _CellularAudioTileState extends State<_CellularAudioTile> {
+  bool? _isReady;
+
+  @override
+  void initState() {
+    super.initState();
+    _check();
+  }
+
+  Future<void> _check() async {
+    final ready = await ShellAudioService.instance.isReady();
+    if (mounted) setState(() => _isReady = ready);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final ready   = _isReady;
+    final status  = ready == null ? 'Checking…' : ready ? 'Active' : 'Not configured';
+    final color   = ready == null ? Colors.white38 : ready ? AppColors.verified : AppColors.warning;
+    final icon    = ready == null ? Icons.hourglass_empty : ready ? Icons.check_circle : Icons.warning_amber;
+
+    return InkWell(
+      onTap: () async {
+        await Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => const AdbAudioSetupScreen()),
+        );
+        _check(); // refresh status on return
+      },
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: AppColors.surface,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Row(
+          children: [
+            Icon(Icons.cable, color: AppColors.primary, size: 22),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('ADB shell audio capture',
+                      style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 2),
+                  const Text(
+                    'Captures caller voice on Android 12+ where the mic is blocked',
+                    style: TextStyle(color: Colors.white38, fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            Row(children: [
+              Icon(icon, color: color, size: 14),
+              const SizedBox(width: 4),
+              Text(status, style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.w600)),
+              const SizedBox(width: 4),
+              const Icon(Icons.chevron_right, color: Colors.white24, size: 18),
+            ]),
+          ],
+        ),
+      ),
+    );
+  }
+}
 
 class _SectionHeader extends StatelessWidget {
   final String title;

@@ -61,6 +61,12 @@ class CallAudioRecorder {
   /// the user to switch to speakerphone.
   Function(String reason)? onCaptureIssue;
 
+  /// Fires (once) when the OS is definitively silencing the mic at the HAL
+  /// level — i.e. [VadProcessor] returned `hardware_muted` (peak exactly 0).
+  /// Unlike [onCaptureIssue], this fires after just ONE segment and stops the
+  /// recording loop immediately because no source or retry can bypass the block.
+  Function(String reason)? onCaptureBlocked;
+
   bool get isRecording => _isRecording;
 
   // ── Public API ─────────────────────────────────────────────────────────
@@ -109,6 +115,7 @@ class CallAudioRecorder {
     _isRecording = false;
     onSegmentReady = null;
     onCaptureIssue = null;
+    onCaptureBlocked = null;
 
     // Ask the native layer to stop (ignore errors — might already be stopped)
     try {
@@ -124,6 +131,7 @@ class CallAudioRecorder {
     _isRecording = false;
     onSegmentReady = null;
     onCaptureIssue = null;
+    onCaptureBlocked = null;
     try {
       _channel.invokeMethod('stopCallSegmentRecording');
     } catch (_) {}
@@ -202,6 +210,14 @@ class CallAudioRecorder {
   // ── Helpers ──────────────────────────────────────────────────────────────
 
   void _onSkip(String reason) {
+    if (reason == 'hardware_muted') {
+      // Peak exactly 0 = telephony HAL is silencing all mic sources at OS
+      // level. No amount of source-switching or retrying will bypass this.
+      // Stop the loop immediately and fire the dedicated blocked callback.
+      _isRecording = false;
+      _reportBlocked(reason);
+      return;
+    }
     _consecutiveSkips++;
     if (_consecutiveSkips >= _issueThreshold) {
       _reportIssue(reason);
@@ -213,6 +229,13 @@ class CallAudioRecorder {
     _issueReported = true;
     debugPrint('CallAudioRecorder: capture issue → $reason');
     onCaptureIssue?.call(reason);
+  }
+
+  void _reportBlocked(String reason) {
+    if (_issueReported) return;
+    _issueReported = true;
+    debugPrint('CallAudioRecorder: hardware muted → $reason (stopping loop)');
+    onCaptureBlocked?.call(reason);
   }
 
   Future<void> _fireCallback(String path) async {

@@ -340,35 +340,40 @@ class VoiceGuardInCallService : InCallService() {
      * InCallService. Telecom ignores AudioManager.isSpeakerphoneOn on many
      * modern devices, so the primary route change must go through
      * InCallService.setAudioRoute().
+     *
+     * Retries at 300 ms, 800 ms, and 1 500 ms to survive the Telecom
+     * audio-route resets that happen when a call transitions dialing→active,
+     * when the remote end picks up, or when the audio policy is reclaimed by
+     * another subsystem.
      */
     fun toggleSpeaker(enabled: Boolean) {
         val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
-        val targetRoute = if (enabled) {
-            CallAudioState.ROUTE_SPEAKER
-        } else {
-            preferredNonSpeakerRoute()
-        }
+        val targetRoute = if (enabled) CallAudioState.ROUTE_SPEAKER else preferredNonSpeakerRoute()
 
-        try {
-            setAudioRoute(targetRoute)
-        } catch (_: Exception) {
-            // Fallback for devices/ROMs that still honor AudioManager directly.
-            audioManager.mode = AudioManager.MODE_IN_CALL
-            @Suppress("DEPRECATION")
-            audioManager.isSpeakerphoneOn = enabled
-        }
-
-        // Some devices briefly override the route after call state changes.
-        handler.postDelayed({
+        fun apply() {
             try {
                 setAudioRoute(targetRoute)
             } catch (_: Exception) {
+                // Fallback for devices / ROMs that still honour AudioManager.
                 audioManager.mode = AudioManager.MODE_IN_CALL
                 @Suppress("DEPRECATION")
                 audioManager.isSpeakerphoneOn = enabled
             }
-        }, 250)
+        }
+
+        apply()
+        handler.postDelayed({ apply() },   300)
+        handler.postDelayed({ apply() },   800)
+        handler.postDelayed({ apply() }, 1_500)
     }
+
+    /**
+     * Report whether the hardware is actually routed to the loudspeaker right
+     * now.  Reads [callAudioState.route] from Telecom — the ground truth that
+     * AudioManager.isSpeakerphoneOn cannot reliably provide on modern devices.
+     */
+    fun getSpeakerActive(): Boolean =
+        callAudioState?.route == CallAudioState.ROUTE_SPEAKER
 
     private fun preferredNonSpeakerRoute(): Int {
         val state = callAudioState

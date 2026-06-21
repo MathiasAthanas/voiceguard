@@ -36,6 +36,9 @@ import java.io.File
 import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import com.voiceguard.adb.AdbConnectionManager
+import com.voiceguard.adb.NsdDiscovery
+import com.voiceguard.adb.ShellAudioSession
 
 class MainActivity : FlutterActivity() {
 
@@ -58,6 +61,10 @@ class MainActivity : FlutterActivity() {
     private var callAudioThread: Thread? = null
     @Volatile private var isRecordingCallAudio = false
     private var currentCallAudioPath: String? = null
+
+    // ── Shell audio (ADB VOICE_DOWNLINK bridge) ────────────────────────────────
+    private var shellAudioSession: ShellAudioSession? = null
+    private var shellAudioEventSink: EventChannel.EventSink? = null
 
     // ── Activity lifecycle ─────────────────────────────────────────────────────
 
@@ -113,6 +120,8 @@ class MainActivity : FlutterActivity() {
         stopVoipRingtone()
         releaseProximityWakeLock()
         stopCallSegmentRecordingInternal()
+        shellAudioSession?.stop()
+        shellAudioSession = null
         super.onDestroy()
     }
 
@@ -172,6 +181,16 @@ class MainActivity : FlutterActivity() {
                         val enabled = call.argument<Boolean>("enabled") ?: false
                         VoiceGuardInCallService.instance?.toggleSpeaker(enabled)
                         result.success(null)
+                    }
+
+                    // Returns true when Telecom has committed ROUTE_SPEAKER.
+                    // Used by CellularCallService.forceSpeakerOn() to confirm
+                    // the hardware is actually routing to the loudspeaker, not
+                    // just that the Dart-side flag was set.
+                    "querySpeakerRoute" -> {
+                        val active =
+                            VoiceGuardInCallService.instance?.getSpeakerActive() ?: false
+                        result.success(active)
                     }
 
                     "toggleMute" -> {
@@ -237,6 +256,112 @@ class MainActivity : FlutterActivity() {
                         result.success(null)
                     }
 
+                    // ── ADB / shell audio setup ────────────────────────────────
+
+                    "adbSetupStatus" -> {
+                        val mgr = AdbConnectionManager.getInstance(applicationContext)
+                        result.success(mapOf(
+                            "isPaired" to mgr.isPaired,
+                            "hasPort"  to (mgr.savedPort >= 0),
+                            "port"     to mgr.savedPort
+                        ))
+                    }
+
+                    "adbStartPairing" -> {
+                        val pPort = call.argument<Int>("pairingPort")
+                        val code  = call.argument<String>("code")
+                        if (pPort == null || code == null) {
+                            result.error("INVALID_ARGUMENT", "pairingPort and code required", null)
+                        } else {
+                            Thread {
+                                val ok = AdbConnectionManager.getInstance(applicationContext)
+                                    .pair(pPort, code)
+                                handler.post { result.success(ok) }
+                            }.also { it.isDaemon = true; it.start() }
+                        }
+                    }
+
+                    "adbSetMainPort" -> {
+                        val port = call.argument<Int>("port")
+                        if (port == null) {
+                            result.error("INVALID_ARGUMENT", "port required", null)
+                        } else {
+                            AdbConnectionManager.getInstance(applicationContext).savePort(port)
+                            result.success(null)
+                        }
+                    }
+
+                    "adbTestConnection" -> {
+                        Thread {
+                            val ok = AdbConnectionManager.getInstance(applicationContext)
+                                .testConnection()
+                            handler.post { result.success(ok) }
+                        }.also { it.isDaemon = true; it.start() }
+                    }
+
+                    "adbReset" -> {
+                        AdbConnectionManager.getInstance(applicationContext).reset()
+                        result.success(null)
+                    }
+
+                    "adbIsAccessibilityEnabled" -> {
+                        val svc = "$packageName/${AdbPairingAccessibilityService::class.java.name}"
+                        val enabled = android.provider.Settings.Secure
+                            .getString(contentResolver,
+                                android.provider.Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES)
+                            ?.split(':')?.any { it.trim().equals(svc, ignoreCase = true) } == true
+                        result.success(enabled)
+                    }
+
+                    "openAccessibilitySettings" -> {
+                        startActivity(
+                            android.content.Intent(
+                                android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS
+                            ).apply { addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK) }
+                        )
+                        result.success(null)
+                    }
+
+                    // Discover the one-time pairing port via mDNS — only broadcasts
+                    // while "Pair device with pairing code" dialog is open.
+                    "adbDiscoverPairingPort" -> {
+                        NsdDiscovery.findPairingPort(applicationContext) { port ->
+                            result.success(port)
+                        }
+                    }
+
+                    // Discover the persistent ADB connection port via mDNS — always
+                    // broadcasts when Wireless Debugging is enabled.
+                    "adbDiscoverMainPort" -> {
+                        NsdDiscovery.findMainPort(applicationContext) { port ->
+                            result.success(port)
+                        }
+                    }
+
+                    "startShellAudioCapture" -> {
+                        shellAudioSession?.stop()
+                        val mgr     = AdbConnectionManager.getInstance(applicationContext)
+                        val session = ShellAudioSession(applicationContext, mgr)
+                        session.onSegmentReady = { path ->
+                            handler.post {
+                                shellAudioEventSink?.success(mapOf("type" to "segment", "path" to path))
+                            }
+                        }
+                        session.onBlocked = {
+                            handler.post {
+                                shellAudioEventSink?.success(mapOf("type" to "blocked"))
+                            }
+                        }
+                        shellAudioSession = session
+                        result.success(session.start())
+                    }
+
+                    "stopShellAudioCapture" -> {
+                        shellAudioSession?.stop()
+                        shellAudioSession = null
+                        result.success(null)
+                    }
+
                     else -> result.notImplemented()
                 }
             }
@@ -248,6 +373,16 @@ class MainActivity : FlutterActivity() {
                 }
                 override fun onCancel(arguments: Any?) {
                     VoiceGuardInCallService.setEventSink(null)
+                }
+            })
+
+        EventChannel(flutterEngine.dartExecutor.binaryMessenger, "com.voiceguard/shell_audio")
+            .setStreamHandler(object : EventChannel.StreamHandler {
+                override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                    shellAudioEventSink = events
+                }
+                override fun onCancel(arguments: Any?) {
+                    shellAudioEventSink = null
                 }
             })
     }

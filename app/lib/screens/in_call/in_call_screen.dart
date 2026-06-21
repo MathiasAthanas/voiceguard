@@ -7,6 +7,7 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import '../../core/constants/app_colors.dart';
+import '../../core/models/contact_model.dart';
 import '../../core/services/signaling_service.dart';
 import '../../core/services/webrtc_service.dart';
 import '../../core/services/cellular_call_service.dart';
@@ -15,11 +16,13 @@ import '../../core/services/voip_relay_service.dart';
 import '../../core/services/call_audio_recorder.dart';
 import '../../core/services/vad_processor.dart';
 import '../../core/services/verification_service.dart';
+import '../../core/services/shell_audio_service.dart';
 import '../../core/models/verification_result_model.dart';
 import '../../widgets/confidence_chart_widget.dart';
 import '../../widgets/verification_overlay_widget.dart';
 import '../../widgets/voice_wave_widget.dart';
 import '../../widgets/call_button_widget.dart';
+import '../enroll/enroll_screen.dart';
 
 class InCallScreen extends StatefulWidget {
   final String contactName;
@@ -91,6 +94,15 @@ class _InCallScreenState extends State<InCallScreen> {
   // Whether we already retried cellular capture with the MIC source after
   // VOICE_RECOGNITION returned silence (Android 12–13 restriction).
   bool _triedMicFallback = false;
+
+  // Set when ADB shell audio (VOICE_DOWNLINK via UID 2000) is the active
+  // capture path. When true, _callRecorder is not started and the signal-
+  // quality notice is suppressed.
+  bool _usingShellAudio = false;
+
+  // Set when the OS silences ALL audio sources at the HAL level (peak == 0).
+  // Triggers post-call enrollment redirect to EnrollScreen for unenrolled contacts.
+  bool _hardwareAudioBlocked = false;
 
   /// Set when the recorder can't pick up usable remote-caller audio (e.g. the
   /// call is on the earpiece so there's nothing for VAD to extract). Surfaced
@@ -269,7 +281,7 @@ class _InCallScreenState extends State<InCallScreen> {
       await _saveCallRecord();
     }
 
-    if (mounted) Navigator.pop(context);
+    if (mounted) _popOrEnroll();
   }
 
   // ── WebRTC connection listener ────────────────────────────────────────────
@@ -394,22 +406,23 @@ class _InCallScreenState extends State<InCallScreen> {
 
       // ── Auto-enrollment mode ────────────────────────────────────────────
       final target = _enrollmentTargetCallTime;
+      final contactLabel = widget.contactName.isNotEmpty
+          ? widget.contactName
+          : widget.contactNumber;
+
       setState(() {
         _enrollmentMode = true;
-        _enrollmentStatus = widget.isVoIP
-            ? 'Building voice profile (0/$target)...'
-            : 'Speaker enrollment active (0/$target)...';
+        _captureHint = null;
+        _enrollmentStatus = 'Capturing ${contactLabel}\'s voice (0/$target)…';
       });
 
       _segmentHandler = (filePath) async {
         if (!mounted || !_isMonitoring) return;
 
-        // The recorder deletes filePath in a finally block once this callback
-        // returns. Copy it to a persistent temp file so segments collected
-        // earlier are still readable when we submit all of them together.
+        // The recorder deletes filePath once this callback returns.
+        // Copy to a persistent temp file so earlier segments survive.
         try {
           final dir = await getTemporaryDirectory();
-          // Preserve the source extension: .mp4 for VoIP OUTPUT, .wav for cellular.
           final ext = filePath.endsWith('.mp4') ? '.mp4' : '.wav';
           final copy =
               '${dir.path}/vg_enroll_${DateTime.now().millisecondsSinceEpoch}$ext';
@@ -423,49 +436,60 @@ class _InCallScreenState extends State<InCallScreen> {
         final count = _enrollmentSegments.length;
 
         if (count < target) {
-          if (mounted)
+          if (mounted) {
             setState(() {
-              _captureHint = null; // audio is flowing again
-              _enrollmentStatus = widget.isVoIP
-                  ? 'Building voice profile ($count/$target)...'
-                  : 'Speaker enrollment active ($count/$target)...';
+              _captureHint = null; // audio is flowing — clear any stale hint
+              _enrollmentStatus =
+                  'Capturing ${contactLabel}\'s voice ($count/$target)…';
             });
+          }
           return;
         }
 
-        if (mounted)
-          setState(() => _enrollmentStatus = 'Finalising voice profile...');
+        if (mounted) {
+          setState(() => _enrollmentStatus = 'Processing voice profile…');
+        }
 
-        // Call-time enrollment: signal the AI that audio quality is lower
+        // Call-time audio is lower quality than a quiet EnrollScreen recording;
+        // signal that to the AI so it applies appropriate normalisation.
         final success = await _verificationService.enrollContact(
           contactId: _verificationContactId,
           audioPaths: List.from(_enrollmentSegments),
           sourceQuality: 'low',
         );
 
-        // Always clean up the persistent copies we made
+        // Always clean up the persistent copies we made.
         for (final p in List<String>.from(_enrollmentSegments)) {
           try { File(p).deleteSync(); } catch (_) {}
         }
         _enrollmentSegments.clear();
 
         if (!mounted) return;
+
         if (success) {
           setState(() {
             _enrollmentMode = true;
             _enrollmentComplete = true;
-            _enrollmentStatus = 'Voice profile ready for next call';
+            _captureHint = null;
+            _enrollmentStatus =
+                'Voice profile saved. Verification starts on your next call with $contactLabel.';
           });
+          // Stop recording — we have what we need.  A small delay keeps the
+          // success message visible before the UI settles.
           _segmentHandler = null;
+          await Future.delayed(const Duration(seconds: 2));
           unawaited(_stopAllMonitoring());
         } else {
-          if (mounted)
+          // Backend rejected the segments (too short, too noisy, etc.).
+          // Reset and try again with fresh segments this call.
+          _enrollmentSegments.clear();
+          if (mounted) {
             setState(() {
               _enrollmentComplete = false;
-              _enrollmentStatus = widget.isVoIP
-                  ? 'Retrying voice profile (0/$target)...'
-                  : 'Retrying speaker enrollment (0/$target)...';
+              _enrollmentStatus =
+                  'Profile attempt failed — retrying ($contactLabel 0/$target)…';
             });
+          }
         }
       };
     } else {
@@ -491,67 +515,131 @@ class _InCallScreenState extends State<InCallScreen> {
       // _segmentHandler is already set above and the relay picks it up.
       debugPrint('VoipMonitor: segment handler ready, relay will wire it');
       return;
-    } else {
-      _callRecorder.onSegmentReady = (f) async {
-        await _segmentHandler?.call(f);
-      };
-      _callRecorder.onCaptureIssue = _onCaptureIssue;
-
-      if (!isEnrolled) {
-        // ── Enrollment: skip VOICE_RECOGNITION entirely ─────────────────────
-        // VOICE_RECOGNITION returns silence on Android 12+ even with default
-        // dialer permission, wasting 3 × 5 s before the MIC fallback fires.
-        // For enrollment we need audio NOW, so start with MIC (+ speakerphone
-        // already on from _prepareCallTimeEnrollmentAudio) immediately.
-        // Mark _triedMicFallback so the issue handler doesn't restart again —
-        // if MIC also fails the caller gets a persistent hint instead.
-        _triedMicFallback = true;
-        await _callRecorder.startMonitoring(
-          segmentSeconds: 5,
-          vadMode: VadMode.speech,
-          audioSource: CallAudioRecorder.audioSourceMic,
-        );
-      } else {
-        // ── Verification: VOICE_RECOGNITION + earpiece bleed ────────────────
-        // Preferred for verification — captures the remote caller's voice via
-        // acoustic bleed into the mic without disrupting the audio route.
-        // _onCaptureIssue handles the MIC + speakerphone fallback if needed.
-        await _callRecorder.startMonitoring(
-          segmentSeconds: 5,
-          vadMode: VadMode.remoteBleed,
-        );
-      }
     }
+
+    // ── Cellular: try ADB shell audio (VOICE_DOWNLINK) first ─────────────────
+    // Shell audio captures the caller's receive path directly via UID 2000,
+    // bypassing Android's hardware mic block (Pixel 6 / Android 12+ during
+    // MODE_IN_CALL). No speaker setup needed — the downlink is digital.
+    if (await _tryStartShellAudio()) return;
+
+    // ── Cellular: fall back to standard mic recorder ──────────────────────────
+    if (!isEnrolled) {
+      await _prepareCallTimeEnrollmentAudio();
+    } else {
+      await _prepareCallTimeVerificationAudio();
+    }
+
+    _callRecorder.onSegmentReady = (f) async {
+      await _segmentHandler?.call(f);
+    };
+    _callRecorder.onCaptureIssue = _onCaptureIssue;
+    _callRecorder.onCaptureBlocked = _onCaptureBlocked;
+
+    if (!isEnrolled) {
+      // ── Enrollment: skip VOICE_RECOGNITION entirely ─────────────────────
+      // VOICE_RECOGNITION returns silence on Android 12+ even with default
+      // dialer permission, wasting 3 × 5 s before the MIC fallback fires.
+      // For enrollment we need audio NOW, so start with MIC (+ speakerphone
+      // already on from _prepareCallTimeEnrollmentAudio) immediately.
+      // Mark _triedMicFallback so the issue handler doesn't restart again —
+      // if MIC also fails the caller gets a persistent hint instead.
+      _triedMicFallback = true;
+      await _callRecorder.startMonitoring(
+        segmentSeconds: 5,
+        vadMode: VadMode.speech,
+        audioSource: CallAudioRecorder.audioSourceMic,
+      );
+    } else {
+      // ── Verification: VOICE_RECOGNITION + speakerphone ──────────────────
+      // Speaker is pre-enabled by _prepareCallTimeVerificationAudio, so the
+      // remote caller's voice is loud in the room. VOICE_RECOGNITION source
+      // has AEC/AGC/NS disabled — it captures the speaker output cleanly.
+      // VadMode.speech detects direct speech rather than subtle earpiece bleed.
+      // If VOICE_RECOGNITION is silenced by the OS (Android 12+ restriction),
+      // _onCaptureIssue will fall back to the MIC source the same way
+      // enrollment does — speaker volume is high enough that some signal
+      // survives AEC cancellation.
+      await _callRecorder.startMonitoring(
+        segmentSeconds: 5,
+        vadMode: VadMode.speech,
+      );
+    }
+  }
+
+  /// Attempts to start ADB shell audio capture (VOICE_DOWNLINK via UID 2000).
+  /// Returns `true` and sets [_usingShellAudio] if started successfully.
+  /// Returns `false` to signal that the caller should fall back to [_callRecorder].
+  Future<bool> _tryStartShellAudio() async {
+    if (!await ShellAudioService.instance.isReady()) return false;
+
+    ShellAudioService.instance.onSegmentReady = (f) async {
+      await _segmentHandler?.call(f);
+    };
+    ShellAudioService.instance.onBlocked = () {
+      if (mounted) _onCaptureBlocked('hardware_muted');
+    };
+
+    final started = await ShellAudioService.instance.startCapture();
+    if (!started) {
+      ShellAudioService.instance.onSegmentReady = null;
+      ShellAudioService.instance.onBlocked = null;
+      return false;
+    }
+
+    _usingShellAudio = true;
+    debugPrint('InCall: shell audio active (VOICE_DOWNLINK via ADB UID 2000)');
+    if (mounted) setState(() => _captureHint = null);
+    return true;
   }
 
   Future<void> _prepareCallTimeEnrollmentAudio() async {
     if (!mounted) return;
+    if (widget.isVoIP) {
+      // VoIP relay provides clean remote PCM directly — no speaker change needed.
+      setState(() => _captureHint =
+          'Listening to ${widget.contactName}\'s voice — building profile automatically.');
+      return;
+    }
+    // Cellular: enforce loudspeaker so the remote caller's voice plays loud
+    // enough for VOICE_RECOGNITION (AEC off) to capture it cleanly.
+    // forceSpeakerOn() verifies the hardware route via Telecom, not just the
+    // Dart flag, and retries up to 3× to survive Telecom audio-route resets.
+    if (mounted) {
+      setState(() => _captureHint =
+          'Enabling speaker for voice capture…');
+    }
     try {
-      if (widget.isVoIP) {
-        // OUTPUT channel records the remote caller directly — no mic/speaker
-        // action needed. Just let the user know enrollment is running silently.
-        setState(() => _captureHint =
-            'Listening to caller… voice profile will build automatically.');
-        return;
-      }
-
-      // Cellular enrollment: speaker routes the remote caller's voice to the
-      // mic so VoiceGuard can build a voice profile automatically.
-      if (!_cellular.isSpeakerOn) await _cellular.toggleSpeaker();
-      if (mounted) {
-        setState(() => _captureHint =
-            'Speaker on — building voice profile automatically. Keep quiet while the caller speaks.');
-      }
+      await _cellular.forceSpeakerOn();
     } catch (e) {
-      debugPrint('InCall: prepare enrollment audio failed: $e');
+      debugPrint('InCall: forceSpeakerOn failed: $e');
+    }
+    if (mounted) {
+      setState(() => _captureHint =
+          'Speaker on — stay quiet so VoiceGuard can hear ${widget.contactName}.');
     }
   }
 
   Future<void> _prepareCallTimeVerificationAudio() async {
-    if (!mounted || !widget.isVoIP) return;
-    // OUTPUT channel records the remote caller — nothing for the user to do.
-    // Clear any stale hint from a previous state.
-    setState(() => _captureHint = null);
+    if (!mounted) return;
+    if (widget.isVoIP) {
+      setState(() => _captureHint = null);
+      return;
+    }
+    // Cellular: same speaker enforcement as enrollment — the hardware must
+    // actually be routing to the loudspeaker before the recorder starts.
+    if (mounted) {
+      setState(() => _captureHint = 'Enabling speaker for voice verification…');
+    }
+    try {
+      await _cellular.forceSpeakerOn();
+    } catch (e) {
+      debugPrint('InCall: forceSpeakerOn (verify) failed: $e');
+    }
+    if (mounted) {
+      setState(() => _captureHint =
+          'Speaker on — VoiceGuard is listening to ${widget.contactName}.');
+    }
   }
 
   /// Called when a recorder reports it can't capture usable remote-caller
@@ -570,20 +658,30 @@ class _InCallScreenState extends State<InCallScreen> {
     }
 
     // ── Cellular ─────────────────────────────────────────────────────────────
+    final contactLabel = widget.contactName.isNotEmpty
+        ? widget.contactName
+        : widget.contactNumber;
+
     if (!_cellular.isSpeakerOn) {
-      // VOICE_RECOGNITION returned silence; speakerphone routes the caller's
-      // voice directly to the mic. (Enrollment always pre-enables speaker so
-      // this branch is only hit for verification on earpiece.)
+      // Speaker was turned off mid-call (user manually disabled it).
+      // Re-enforce it — VoiceGuard cannot capture without speakerphone.
       _verificationService.showCaptureIssue(
-          'No caller speech detected. Tap the speaker button so VoiceGuard can hear the caller.');
-      setState(() => _captureHint =
-          'Tap to turn on speaker so VoiceGuard can hear the caller.');
+          'Speaker must stay on for VoiceGuard to hear the caller.');
+      setState(() => _captureHint = 'Re-enabling speaker for voice capture…');
+      // forceSpeakerOn confirms the hardware route, not just the Dart flag.
+      unawaited(_cellular.forceSpeakerOn().then((_) {
+        if (mounted) {
+          setState(() => _captureHint =
+              'Speaker restored — listening to $contactLabel.');
+        }
+      }));
       return;
     }
 
-    // Speaker is ON. On Android 12–13, VOICE_RECOGNITION may return silence
-    // even for the default dialer. Retry with the plain MIC source — with the
-    // speaker on, the caller's voice reaches the mic directly.
+    // Speaker is ON but VOICE_RECOGNITION returned silence.
+    // On Android 12–13, the OS silences VOICE_RECOGNITION during calls even
+    // for the default dialer.  Retry with MIC — at high speaker volumes a
+    // meaningful signal survives AEC cancellation.
     if (!_triedMicFallback) {
       _triedMicFallback = true;
       debugPrint('InCall: VOICE_RECOGNITION silent — retrying with MIC source');
@@ -595,20 +693,65 @@ class _InCallScreenState extends State<InCallScreen> {
       return;
     }
 
-    // MIC source exhausted too. Show a contextual non-blocking hint.
+    // Both sources exhausted — show a contextual, non-blocking hint.
     if (_enrollmentMode && !_enrollmentComplete) {
-      // Enrollment: speaker is already on and MIC isn't detecting speech.
-      // The caller probably isn't speaking yet.
       _verificationService.showCaptureIssue(
-          'No speech detected. Ask the caller to speak — voice profile needs at least 15 s of audio.');
-      setState(() =>
-          _captureHint = 'Ask the caller to keep talking — building voice profile.');
+          'No speech detected. Ask $contactLabel to speak — the profile needs ~15 s of audio.');
+      setState(() => _captureHint =
+          'Ask $contactLabel to keep talking — building voice profile.');
     } else {
       _verificationService.showCaptureIssue(
           'Audio capture limited on this device. Keep phone on speaker for best results.');
       setState(() =>
           _captureHint = 'Keep phone on speaker — VoiceGuard is listening.');
     }
+  }
+
+  /// Called when [CallAudioRecorder] detects that ALL PCM samples are zero —
+  /// the telephony HAL is silencing the mic at OS level (Pixel 6 / Android 12+
+  /// during MODE_IN_CALL).  No source switch or retry can bypass this.
+  ///
+  /// For unenrolled contacts we set a flag so [_popOrEnroll] navigates to
+  /// [EnrollScreen] after the call ends, letting the user record the contact's
+  /// voice while the mic is free.
+  void _onCaptureBlocked(String reason) {
+    if (!mounted || !_isMonitoring) return;
+    _hardwareAudioBlocked = true;
+
+    final contactLabel = widget.contactName.isNotEmpty
+        ? widget.contactName
+        : widget.contactNumber;
+
+    if (_enrollmentMode && !_enrollmentComplete) {
+      setState(() => _captureHint =
+          'Mic blocked by Android during cellular calls on this device. '
+          'You\'ll be taken to enroll $contactLabel after the call.');
+    } else {
+      setState(() => _captureHint =
+          'Mic blocked by Android during cellular calls on this device. '
+          'Verification unavailable for this call.');
+    }
+  }
+
+  /// After a call ends, navigate to [EnrollScreen] when the mic was blocked and
+  /// the contact is still unenrolled.  Otherwise just pop back to the caller.
+  void _popOrEnroll() {
+    if (!mounted) return;
+    if (_hardwareAudioBlocked && _enrollmentMode && !_enrollmentComplete && !widget.isVoIP) {
+      final contact = ContactModel(
+        id: widget.contactNumber.isNotEmpty
+            ? widget.contactNumber
+            : widget.contactName,
+        name: widget.contactName.isNotEmpty ? widget.contactName : 'Unknown',
+        phoneNumber: widget.contactNumber,
+      );
+      Navigator.pushReplacement(
+        context,
+        MaterialPageRoute(builder: (_) => EnrollScreen(contact: contact)),
+      );
+      return;
+    }
+    Navigator.pop(context);
   }
 
   /// One-tap action on the capture hint: enable speakerphone so the remote
@@ -754,6 +897,10 @@ class _InCallScreenState extends State<InCallScreen> {
     await _relay?.stop();
     _relay = null;
     await _voipRecorder.stopMonitoring();
+    if (_usingShellAudio) {
+      await ShellAudioService.instance.stopCapture();
+      _usingShellAudio = false;
+    }
     await _callRecorder.stopMonitoring();
   }
 
@@ -782,7 +929,7 @@ class _InCallScreenState extends State<InCallScreen> {
     }
 
     await _saveCallRecord();
-    if (mounted) Navigator.pop(context);
+    if (mounted) _popOrEnroll();
   }
 
   // ── Call history ──────────────────────────────────────────────────────────
@@ -1172,8 +1319,9 @@ class _InCallScreenState extends State<InCallScreen> {
                     value: _enrollmentComplete
                         ? 1
                         : _enrollmentTargetCallTime > 0
-                            ? _enrollmentSegments.length /
-                                _enrollmentTargetCallTime
+                            ? (_enrollmentSegments.length /
+                                    _enrollmentTargetCallTime)
+                                .clamp(0.0, 1.0)
                             : 0,
                     minHeight: 4,
                     backgroundColor: Colors.white10,
@@ -1189,25 +1337,38 @@ class _InCallScreenState extends State<InCallScreen> {
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 24),
                 child: Material(
-                  color: AppColors.warning.withValues(alpha: 0.15),
+                  color: _hardwareAudioBlocked
+                      ? AppColors.danger.withValues(alpha: 0.12)
+                      : AppColors.warning.withValues(alpha: 0.15),
                   borderRadius: BorderRadius.circular(10),
                   child: InkWell(
                     borderRadius: BorderRadius.circular(10),
-                    onTap: _enableSpeakerForCapture,
+                    onTap: _hardwareAudioBlocked ? null : _enableSpeakerForCapture,
                     child: Padding(
                       padding: const EdgeInsets.symmetric(
                           horizontal: 12, vertical: 8),
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          const Icon(Icons.volume_up,
-                              size: 16, color: AppColors.warning),
+                          Icon(
+                            _hardwareAudioBlocked
+                                ? Icons.mic_off
+                                : Icons.volume_up,
+                            size: 16,
+                            color: _hardwareAudioBlocked
+                                ? AppColors.danger
+                                : AppColors.warning,
+                          ),
                           const SizedBox(width: 8),
                           Flexible(
                             child: Text(
                               _captureHint!,
-                              style: const TextStyle(
-                                  fontSize: 12, color: AppColors.warning),
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: _hardwareAudioBlocked
+                                    ? AppColors.danger
+                                    : AppColors.warning,
+                              ),
                             ),
                           ),
                         ],
@@ -1219,7 +1380,7 @@ class _InCallScreenState extends State<InCallScreen> {
             ],
 
             // Cellular signal-quality notice (shown once call is active)
-            if (!widget.isVoIP && _callIsActive && !_enrollmentMode) ...[
+            if (!widget.isVoIP && _callIsActive && !_enrollmentMode && !_usingShellAudio) ...[
               const SizedBox(height: 6),
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 24),
@@ -1235,6 +1396,21 @@ class _InCallScreenState extends State<InCallScreen> {
                     ),
                   ],
                 ),
+              ),
+            ],
+            // Shell audio active indicator
+            if (!widget.isVoIP && _callIsActive && _usingShellAudio) ...[
+              const SizedBox(height: 6),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: const [
+                  Icon(Icons.hd, size: 12, color: AppColors.verified),
+                  SizedBox(width: 4),
+                  Text(
+                    'High-quality caller audio active',
+                    style: TextStyle(fontSize: 10, color: AppColors.verified),
+                  ),
+                ],
               ),
             ],
 

@@ -1,3 +1,21 @@
+# AudioCaptureMain is launched by app_process via its class name — must not be renamed.
+-keep class com.voiceguard.shell.AudioCaptureMain { *; }
+-keepclassmembers class com.voiceguard.shell.AudioCaptureMain {
+    public static void main(java.lang.String[]);
+}
+
+# libadb-android — ADB protocol + SPAKE2 wireless pairing.
+-keep class io.github.muntashirakon.adb.** { *; }
+-dontwarn io.github.muntashirakon.adb.**
+
+# Conscrypt TLS provider (required for Android 11+ wireless debugging).
+-keep class org.conscrypt.** { *; }
+-dontwarn org.conscrypt.**
+
+# BouncyCastle PKIX — X509 certificate generation.
+-keep class org.bouncycastle.** { *; }
+-dontwarn org.bouncycastle.**
+
 -keep class io.flutter.app.** { *; }
 -keep class io.flutter.plugin.** { *; }
 -keep class io.flutter.util.** { *; }

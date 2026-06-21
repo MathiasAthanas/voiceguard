@@ -174,6 +174,14 @@ class VadProcessor {
     }
 
     // ── Dead-capture guard ────────────────────────────────────────────────
+    // peak == 0.0 exactly means ALL PCM samples are zero — the OS is silencing
+    // the mic at the HAL level (Pixel 6 / Android 12+ during MODE_IN_CALL).
+    // No source or retry will help; surface a distinct reason so callers can
+    // stop immediately without wasting time on fallback sources.
+    if (peak == 0.0) {
+      debugPrint('$tag: hardware muted (all PCM samples zero) → skip');
+      return const VadResult.skipped('hardware_muted');
+    }
     // speech mode uses a lower threshold because WebRTC AEC suppresses the
     // caller's level; earpiece bleed (remoteBleed) needs more signal to be
     // distinguishable from noise.

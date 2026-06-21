@@ -10,12 +10,12 @@ android {
     ndkVersion flutter.ndkVersion
 
     compileOptions {
-        sourceCompatibility JavaVersion.VERSION_1_8
-        targetCompatibility JavaVersion.VERSION_1_8
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
     }
 
     kotlinOptions {
-        jvmTarget = "1.8"
+        jvmTarget = "11"
     }
 
     defaultConfig {
@@ -38,4 +38,20 @@ android {
 
 flutter {
     source "../.."
+}
+
+dependencies {
+    // ADB client for Android — supports wireless debugging with SPAKE2 pairing (Android 11+).
+    // Used by AdbConnectionManager to pair and connect via wireless debugging, then launch
+    // AudioCaptureMain as shell UID 2000 to bypass CAPTURE_AUDIO_OUTPUT for VOICE_DOWNLINK.
+    // JitPack: https://jitpack.io/#MuntashirAkon/libadb-android
+    implementation 'com.github.MuntashirAkon:libadb-android:3.1.1'
+
+    // TLS provider required for Android 11+ wireless debugging connections.
+    implementation 'org.conscrypt:conscrypt-android:2.5.3'
+
+    // BouncyCastle PKIX — used to generate the self-signed RSA certificate required by
+    // libadb-android (AbsAdbConnectionManager.getCertificate()). Replaces sun-security-android
+    // which crashes on API 36 due to a missing X500Principal constructor.
+    implementation 'org.bouncycastle:bcpkix-jdk15to18:1.81'
 }

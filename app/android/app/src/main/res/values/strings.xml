@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="adb_a11y_description">Reads the ADB pairing code from Android Developer Options to set up cellular audio capture automatically — so you never have to copy port numbers between apps.</string>
+</resources>

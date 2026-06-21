@@ -196,6 +196,49 @@ class CellularCallService extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Enable the loudspeaker and verify that the hardware is **actually** routed
+  /// to the speaker, not just that the Dart-side flag was set.
+  ///
+  /// Telecom can override audio routing silently after call-state transitions.
+  /// This method polls [querySpeakerRoute] (which reads Telecom's own
+  /// [CallAudioState.route]) after each toggle attempt and retries up to three
+  /// times with 450 ms gaps.  Returns true once confirmed, false if the route
+  /// could not be verified after all attempts (recording still starts — some
+  /// signal is better than none).
+  Future<bool> forceSpeakerOn() async {
+    // Update Dart state immediately for UI responsiveness.
+    if (!_isSpeakerOn) {
+      _isSpeakerOn = true;
+      notifyListeners();
+    }
+
+    for (int attempt = 1; attempt <= 3; attempt++) {
+      try {
+        await _channel.invokeMethod('toggleSpeaker', {'enabled': true});
+      } on PlatformException catch (e) {
+        debugPrint('forceSpeakerOn[$attempt]: toggleSpeaker failed — ${e.message}');
+      }
+
+      // Give Telecom time to commit the route before polling.
+      await Future.delayed(const Duration(milliseconds: 450));
+
+      try {
+        final confirmed =
+            await _channel.invokeMethod<bool>('querySpeakerRoute') ?? false;
+        if (confirmed) {
+          debugPrint('forceSpeakerOn: confirmed on attempt $attempt');
+          return true;
+        }
+        debugPrint('forceSpeakerOn[$attempt]: route not yet SPEAKER — retrying');
+      } on PlatformException catch (e) {
+        debugPrint('forceSpeakerOn[$attempt]: query failed — ${e.message}');
+      }
+    }
+
+    debugPrint('forceSpeakerOn: unconfirmed after 3 attempts — proceeding anyway');
+    return false;
+  }
+
   Future<void> toggleMute() async {
     _isMuted = !_isMuted;
     try {
