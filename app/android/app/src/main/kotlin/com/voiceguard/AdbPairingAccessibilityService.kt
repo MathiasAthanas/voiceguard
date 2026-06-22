@@ -26,8 +26,15 @@ import java.util.concurrent.atomic.AtomicBoolean
 class AdbPairingAccessibilityService : AccessibilityService() {
 
     companion object {
-        private const val TAG          = "AdbA11y"
-        private const val SETTINGS_PKG = "com.android.settings"
+        private const val TAG = "AdbA11y"
+
+        // Stock Android settings package; Samsung also uses com.samsung.android.settings
+        // for their UI shell but Developer Options / Wireless Debugging remain in the
+        // AOSP package on all tested One UI versions.
+        private val SETTINGS_PKGS = setOf(
+            "com.android.settings",
+            "com.samsung.android.settings",  // One UI fallback
+        )
         private const val NOTIF_CH     = "voiceguard_adb_pairing"
         private const val NOTIF_ID     = 9900
     }
@@ -45,7 +52,7 @@ class AdbPairingAccessibilityService : AccessibilityService() {
             feedbackType    = AccessibilityServiceInfo.FEEDBACK_GENERIC
             flags           = AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
             notificationTimeout = 400
-            packageNames    = arrayOf(SETTINGS_PKG)
+            packageNames    = SETTINGS_PKGS.toTypedArray()
         }
         Log.d(TAG, "ADB pairing accessibility service connected")
     }
@@ -56,7 +63,7 @@ class AdbPairingAccessibilityService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         if (pairing.get()) return
-        if (event.packageName?.toString() != SETTINGS_PKG) return
+        if (event.packageName?.toString() !in SETTINGS_PKGS) return
 
         // Skip events unrelated to window transitions and content updates
         val t = event.eventType

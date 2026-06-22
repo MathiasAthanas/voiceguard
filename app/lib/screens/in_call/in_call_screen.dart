@@ -18,7 +18,6 @@ import '../../core/services/vad_processor.dart';
 import '../../core/services/verification_service.dart';
 import '../../core/services/shell_audio_service.dart';
 import '../../core/models/verification_result_model.dart';
-import '../../widgets/confidence_chart_widget.dart';
 import '../../widgets/verification_overlay_widget.dart';
 import '../../widgets/voice_wave_widget.dart';
 import '../../widgets/call_button_widget.dart';
@@ -115,11 +114,6 @@ class _InCallScreenState extends State<InCallScreen> {
   /// For presentation testing we collect three usable call-time segments. This
   /// keeps enrollment fast while still avoiding a one-sample voiceprint.
   static const int _enrollmentTargetCallTime = 3;
-
-  // ── Confidence history (for chart) ───────────────────────────────────────
-  final List<ConfidencePoint> _confidenceHistory = [];
-  static const int _maxChartPoints = ConfidenceChartWidget.maxPoints;
-  bool _chartExpanded = false;
 
   // ── DTMF keypad ───────────────────────────────────────────────────────────
   bool _dtmfOpen = false;
@@ -245,18 +239,6 @@ class _InCallScreenState extends State<InCallScreen> {
       _lastSpoofProbability = result.spoofProbability;
       _lastSegmentsAnalyzed = result.segmentsAnalyzed;
       _lastVerificationMessage = result.message;
-      if (result.verdict != VerificationVerdict.silent &&
-          result.verdict != VerificationVerdict.idle &&
-          result.verdict != VerificationVerdict.analyzing) {
-        _confidenceHistory.add(ConfidencePoint(
-          time: result.timestamp,
-          confidence: result.confidence,
-          verdict: result.verdict,
-        ));
-        if (_confidenceHistory.length > _maxChartPoints) {
-          _confidenceHistory.removeAt(0);
-        }
-      }
     });
     unawaited(_saveDetectionRecord(result));
     _showVerificationAlert(result);
@@ -402,8 +384,6 @@ class _InCallScreenState extends State<InCallScreen> {
     // which keeps recording separate from enrollment/verification decisions.
 
     if (!isEnrolled) {
-      await _prepareCallTimeEnrollmentAudio();
-
       // ── Auto-enrollment mode ────────────────────────────────────────────
       final target = _enrollmentTargetCallTime;
       final contactLabel = widget.contactName.isNotEmpty
@@ -474,6 +454,7 @@ class _InCallScreenState extends State<InCallScreen> {
             _enrollmentStatus =
                 'Voice profile saved. Verification starts on your next call with $contactLabel.';
           });
+          _persistEnrolledInHive();
           // Stop recording — we have what we need.  A small delay keeps the
           // success message visible before the UI settles.
           _segmentHandler = null;
@@ -494,7 +475,6 @@ class _InCallScreenState extends State<InCallScreen> {
       };
     } else {
       // ── Verification mode ───────────────────────────────────────────────
-      await _prepareCallTimeVerificationAudio();
       bool warmupDone = false;
       _segmentHandler = (filePath) async {
         if (_captureHint != null && mounted) {
@@ -591,6 +571,32 @@ class _InCallScreenState extends State<InCallScreen> {
     debugPrint('InCall: shell audio active (VOICE_DOWNLINK via ADB UID 2000)');
     if (mounted) setState(() => _captureHint = null);
     return true;
+  }
+
+  // Stamps isEnrolled=true in the local Hive contacts box after successful
+  // auto-enrollment during a call, so ContactsScreen shows the correct badge.
+  void _persistEnrolledInHive() {
+    try {
+      final box = Hive.box('contacts');
+      final normalized =
+          widget.contactNumber.replaceAll(RegExp(r'\D'), '');
+      for (final key in box.keys) {
+        final raw = box.get(key);
+        if (raw == null) continue;
+        final map = Map<String, dynamic>.from(raw as Map);
+        final storedNum = ((map['phoneNumber'] as String?) ?? '')
+            .replaceAll(RegExp(r'\D'), '');
+        if ((normalized.isNotEmpty && storedNum == normalized) ||
+            map['name'] == widget.contactName) {
+          map['isEnrolled'] = true;
+          map['enrolledAt'] = DateTime.now().toIso8601String();
+          box.put(key, map);
+          return;
+        }
+      }
+    } catch (e) {
+      debugPrint('Auto-enroll: Hive persist failed: $e');
+    }
   }
 
   Future<void> _prepareCallTimeEnrollmentAudio() async {
@@ -791,17 +797,6 @@ class _InCallScreenState extends State<InCallScreen> {
         _lastSpoofProbability = result.spoofProbability;
         _lastSegmentsAnalyzed = result.segmentsAnalyzed;
         _lastVerificationMessage = result.message;
-        if (result.verdict != VerificationVerdict.silent &&
-            result.verdict != VerificationVerdict.idle &&
-            result.verdict != VerificationVerdict.analyzing) {
-          _confidenceHistory.add(ConfidencePoint(
-            time: result.timestamp,
-            confidence: result.confidence,
-            verdict: result.verdict,
-          ));
-          if (_confidenceHistory.length > _maxChartPoints)
-            _confidenceHistory.removeAt(0);
-        }
       });
       await _saveDetectionRecord(result);
       _showVerificationAlert(result);
@@ -1425,48 +1420,6 @@ class _InCallScreenState extends State<InCallScreen> {
                 padding: const EdgeInsets.symmetric(horizontal: 24),
                 child: VerificationOverlayWidget(result: verificationResult),
               ),
-              if (_confidenceHistory.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 24),
-                  child: GestureDetector(
-                    onTap: () =>
-                        setState(() => _chartExpanded = !_chartExpanded),
-                    child: Container(
-                      decoration: BoxDecoration(
-                        color: AppColors.surface,
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Column(children: [
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-                          child: Row(children: [
-                            const Icon(Icons.show_chart,
-                                color: Colors.white38, size: 14),
-                            const SizedBox(width: 6),
-                            const Text('Confidence history',
-                                style: TextStyle(
-                                    color: Colors.white38, fontSize: 11)),
-                            const Spacer(),
-                            Icon(
-                                _chartExpanded
-                                    ? Icons.expand_less
-                                    : Icons.expand_more,
-                                color: Colors.white24,
-                                size: 16),
-                          ]),
-                        ),
-                        if (_chartExpanded)
-                          Padding(
-                            padding: const EdgeInsets.fromLTRB(4, 4, 4, 8),
-                            child: ConfidenceChartWidget(
-                                points: _confidenceHistory),
-                          ),
-                      ]),
-                    ),
-                  ),
-                ),
-              ],
             ],
 
             const Spacer(),

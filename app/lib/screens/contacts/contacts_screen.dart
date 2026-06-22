@@ -388,9 +388,9 @@ class _ContactsScreenState extends State<ContactsScreen> {
 
     if (!mounted) return;
 
-    // Delete from AI backend (non-blocking — if it fails the new enrollment
-    // will overwrite the old voiceprint anyway)
-    context.read<VerificationService>().deleteVoiceprint(contact.name);
+    // Await delete so new samples cannot reach the backend before the old
+    // voiceprint is cleared — prevents sample accumulation on re-enrollment.
+    await context.read<VerificationService>().deleteVoiceprint(contact.name);
 
     final enrolled = await Navigator.push<bool>(
       context,

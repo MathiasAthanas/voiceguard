@@ -29,6 +29,12 @@ class VerificationService extends ChangeNotifier {
   // We keep the last [_windowSize] non-trivial results and smooth the verdict.
   // This prevents a single noisy 5-second segment from flipping the display.
   static const int _windowSize = 3;
+  // Both gates must pass before the smoothed verdict can say "verified".
+  // Similarity guards against environment/acoustic false matches (the secondary
+  // model can hit 90%+ on the wrong speaker). Confidence guards against the
+  // backend's own threshold being too loose on noisy cellular audio.
+  static const double _minSimilarityForVerified = 0.45;
+  static const double _minConfidenceForVerified = 0.65;
   final List<VerificationResultModel> _resultWindow = [];
 
   VerificationResultModel get latestResult => _latestResult;
@@ -239,8 +245,20 @@ class VerificationService extends ChangeNotifier {
     final topEntry =
         counts.entries.reduce((a, b) => a.value >= b.value ? a : b);
     final majority = topEntry.value > _resultWindow.length / 2;
-    final smoothedVerdict =
+    var smoothedVerdict =
         majority ? topEntry.key : VerificationVerdict.uncertain;
+
+    // Both gates must pass to report verified. Either being too low downgrades
+    // to uncertain — primary similarity catches acoustic environment matches,
+    // confidence catches cases where the backend's own threshold is too loose.
+    if (smoothedVerdict == VerificationVerdict.verified ||
+        smoothedVerdict == VerificationVerdict.verifiedHigh) {
+      final simTooLow = avgSimilarity != null && avgSimilarity < _minSimilarityForVerified;
+      final confTooLow = avgConfidence < _minConfidenceForVerified;
+      if (simTooLow || confTooLow) {
+        smoothedVerdict = VerificationVerdict.uncertain;
+      }
+    }
 
     return _withSmoothed(latest,
         verdict: smoothedVerdict,
