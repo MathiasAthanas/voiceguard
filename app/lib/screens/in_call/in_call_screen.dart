@@ -317,6 +317,13 @@ class _InCallScreenState extends State<InCallScreen> {
     final targetId = _voipTargetId;
     if (roomId == null || roomId.isEmpty || targetId == null || targetId.isEmpty) {
       debugPrint('VoipRelay: cannot start — roomId or targetId missing');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('⚠️ Call routing failed — please hang up and retry'),
+          backgroundColor: AppColors.danger,
+          duration: Duration(seconds: 5),
+        ));
+      }
       return;
     }
     // Request audio focus before starting flutter_sound's AudioTrack.
@@ -325,12 +332,29 @@ class _InCallScreenState extends State<InCallScreen> {
     _relay = VoipRelayService();
     _webrtc.setRelay(_relay!);
     await _relay!.start(roomId, targetId, _signaling);
-    // Wire remote audio to the enrollment / verification pipeline.
-    // _segmentHandler is set by _startMonitoring() which runs concurrently;
-    // it always completes well before the relay finishes initialising.
-    final handler = _segmentHandler;
-    if (handler != null) {
-      _relay!.onRemoteSegmentReady = (path) async => handler(path);
+
+    // Use a live closure so _segmentHandler is read at segment-delivery time,
+    // not at relay-init time. This eliminates the race where _startMonitoring()
+    // hasn't finished its /enroll/status/ network call yet when the relay
+    // initialises, which caused _segmentHandler to be null and all remote-audio
+    // segments to be silently discarded (onRemoteSegmentReady guard in relay).
+    _relay!.onRemoteSegmentReady = (path) async {
+      await _segmentHandler?.call(path);
+    };
+
+    // Surface audio-hardware failures that the relay logs as debugPrint only.
+    if (!_relay!.micActive || !_relay!.playerActive) {
+      debugPrint(
+        'VoipRelay: incomplete start — '
+        'mic=${_relay!.micActive} player=${_relay!.playerActive}',
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+          content: Text('⚠️ VoIP audio could not start — check microphone permission'),
+          backgroundColor: AppColors.danger,
+          duration: Duration(seconds: 5),
+        ));
+      }
     }
   }
 

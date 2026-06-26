@@ -40,6 +40,8 @@ class VoipRelayService {
   static const int _segTargetBytes = 16000 * 2 * 5;
 
   bool get isActive => _isActive;
+  bool get micActive => _micSubscription != null;
+  bool get playerActive => _playerReady;
 
   /// Live counters — read from the UI every second to verify both ends are
   /// sending and receiving without needing logcat.
