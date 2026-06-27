@@ -158,6 +158,15 @@ class VoipRelayService {
           echoCancel: false,
           noiseSuppress: false,
           autoGain: false,
+          // AudioInterruptionMode.none tells record_android to skip the
+          // AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE request and register no
+          // OnAudioFocusChangeListener. Without this, FlutterSoundPlayer
+          // opening its AudioTrack dispatches AUDIOFOCUS_LOSS(-1) to the
+          // record plugin, which pauses/stops the mic stream — silencing
+          // the local user for the rest of the call on both ends.
+          // The native setVoipSpeakerphone() already holds AUDIOFOCUS_GAIN
+          // for the session so the audio session is still properly owned.
+          audioInterruption: AudioInterruptionMode.none,
         ),
       );
       _micSubscription = stream.listen(

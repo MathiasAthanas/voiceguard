@@ -7,36 +7,33 @@ class VerificationOverlayWidget extends StatelessWidget {
 
   const VerificationOverlayWidget({super.key, required this.result});
 
+  // ── State helpers ───────────────────────────────────────────────────────────
+
   bool get _isIdle =>
       result.verdict == VerificationVerdict.idle ||
       result.verdict == VerificationVerdict.silent;
 
   bool get _isAnalyzing => result.verdict == VerificationVerdict.analyzing;
 
-  bool get _isVerified =>
+  bool get _isNotEnrolled => result.verdict == VerificationVerdict.notEnrolled;
+
+  bool get _isReal =>
       result.verdict == VerificationVerdict.verified ||
       result.verdict == VerificationVerdict.verifiedHigh;
 
-  bool get _isMismatch =>
-      result.verdict == VerificationVerdict.notVerified ||
-      result.verdict == VerificationVerdict.secondaryWarning;
+  // uncertain with confidence == 0 means no segment has been processed yet —
+  // show as loading, not as a verdict.
+  bool get _isEarlyUncertain =>
+      result.verdict == VerificationVerdict.uncertain && result.confidence == 0;
 
-  bool get _isSpoof =>
-      result.verdict == VerificationVerdict.spoofDetected ||
-      result.verdict == VerificationVerdict.spoofSuspected;
+  bool get _hasVerdict =>
+      !_isIdle && !_isAnalyzing && !_isEarlyUncertain && !_isNotEnrolled;
 
-  bool get _isNotEnrolled =>
-      result.verdict == VerificationVerdict.notEnrolled;
+  Color get _accentColor => _isReal ? AppColors.verified : AppColors.danger;
 
-  Color get _accentColor {
-    if (_isVerified) return AppColors.verified;
-    if (_isMismatch) return AppColors.warning;
-    if (_isSpoof) return AppColors.danger;
-    return Colors.white38;
-  }
+  bool get _isSubtle => !_hasVerdict;
 
-  bool get _isSubtle =>
-      _isIdle || _isAnalyzing || result.verdict == VerificationVerdict.uncertain;
+  // ── Build ───────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -62,82 +59,31 @@ class VerificationOverlayWidget extends StatelessWidget {
   }
 
   Widget _buildContent() {
-    if (_isIdle) return _buildCentered(Icons.graphic_eq, 'Listening for speech…', Colors.white24);
-    if (_isAnalyzing) return _buildSpinner();
-    if (_isNotEnrolled) return _buildCentered(Icons.mic_off_rounded, 'Contact not enrolled', Colors.white38);
-    if (_isSpoof) return _buildSpoof();
+    if (_isIdle) {
+      return _buildCentered(Icons.graphic_eq, 'Listening for speech…', Colors.white24);
+    }
+    if (_isAnalyzing) {
+      return _buildSpinner();
+    }
+    if (_isEarlyUncertain) {
+      return _buildCentered(Icons.graphic_eq, 'Checking…', Colors.white38);
+    }
+    if (_isNotEnrolled) {
+      return _buildCentered(Icons.mic_off_rounded, 'Contact not enrolled', Colors.white38);
+    }
     return _buildVerdict();
   }
 
-  Widget _buildCentered(IconData icon, String text, Color color) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        Icon(icon, color: color, size: 16),
-        const SizedBox(width: 8),
-        Text(text, style: TextStyle(color: color, fontSize: 13, fontWeight: FontWeight.w500)),
-      ],
-    );
-  }
-
-  Widget _buildSpinner() {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        SizedBox(
-          width: 15,
-          height: 15,
-          child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary),
-        ),
-        const SizedBox(width: 10),
-        const Text(
-          'Analyzing voice…',
-          style: TextStyle(color: AppColors.primary, fontSize: 13, fontWeight: FontWeight.w600),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildSpoof() {
-    return Row(
-      children: [
-        _iconCircle(Icons.gpp_bad_rounded, AppColors.danger),
-        const SizedBox(width: 14),
-        const Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Suspicious voice',
-                style: TextStyle(
-                  color: AppColors.danger,
-                  fontSize: 16,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 0.1,
-                ),
-              ),
-              SizedBox(height: 3),
-              Text(
-                'Do not share sensitive information',
-                style: TextStyle(color: AppColors.danger, fontSize: 12, fontWeight: FontWeight.w500),
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
+  // ── Result verdict ──────────────────────────────────────────────────────────
 
   Widget _buildVerdict() {
-    final (IconData icon, String title, bool showBar) = switch (result.verdict) {
-      VerificationVerdict.verifiedHigh => (Icons.verified_user_rounded, 'Voice confirmed', true),
-      VerificationVerdict.verified     => (Icons.verified_user_rounded, 'Likely confirmed', true),
-      VerificationVerdict.notVerified ||
-      VerificationVerdict.secondaryWarning => (Icons.warning_amber_rounded, 'Voice mismatch', true),
-      _                                => (Icons.graphic_eq, 'Checking…', false),
-    };
+    final color = _accentColor;
+    final icon = _isReal ? Icons.verified_user_rounded : Icons.gpp_bad_rounded;
+    final title = _isReal ? 'Real speaker' : 'Fake speaker';
+    final bool showBar = result.confidence > 0;
 
-    final color = _isVerified ? AppColors.verified : _isMismatch ? AppColors.warning : Colors.white38;
+    final bool isSpoof = result.verdict == VerificationVerdict.spoofDetected ||
+        result.verdict == VerificationVerdict.spoofSuspected;
 
     return Row(
       children: [
@@ -156,6 +102,17 @@ class VerificationOverlayWidget extends StatelessWidget {
                   letterSpacing: 0.1,
                 ),
               ),
+              if (isSpoof) ...[
+                const SizedBox(height: 3),
+                Text(
+                  'Do not share sensitive information',
+                  style: TextStyle(
+                    color: color,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
               if (showBar) ...[
                 const SizedBox(height: 8),
                 Row(
@@ -184,6 +141,51 @@ class VerificationOverlayWidget extends StatelessWidget {
                 ),
               ],
             ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  // ── Helpers ─────────────────────────────────────────────────────────────────
+
+  Widget _buildCentered(IconData icon, String text, Color color) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Icon(icon, color: color, size: 16),
+        const SizedBox(width: 8),
+        Text(
+          text,
+          style: TextStyle(
+            color: color,
+            fontSize: 13,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildSpinner() {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        SizedBox(
+          width: 15,
+          height: 15,
+          child: CircularProgressIndicator(
+            strokeWidth: 2,
+            color: AppColors.primary,
+          ),
+        ),
+        const SizedBox(width: 10),
+        const Text(
+          'Analyzing voice…',
+          style: TextStyle(
+            color: AppColors.primary,
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
           ),
         ),
       ],
