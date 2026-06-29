@@ -65,26 +65,12 @@ class VoipRelayService {
   }
 
   Future<void> _startPlayer(SignalingService signaling, String roomId) async {
-    try {
-      await _player.openPlayer();
-      await _player.startPlayerFromStream(
-        codec: Codec.pcm16,
-        numChannels: 1,
-        sampleRate: 16000,
-        bufferSize: 1024,
-        interleaved: true,
-      );
-      // Let the Android AudioTrack initialise before live data is pushed.
-      await Future.delayed(const Duration(milliseconds: 80));
-      _playerReady = true;
-      _flushPrePlayerQueue();
-      debugPrint('VoipRelay: player ready');
-    } catch (e) {
-      debugPrint('VoipRelay: player setup error: $e');
-    }
-
+    // Wire the audio handler BEFORE opening the player so that chunks arriving
+    // during player initialisation (~80 ms) are captured in _prePlayerQueue
+    // instead of being silently dropped. _playPcmChunk routes to the queue
+    // when !_playerReady and flushes it once the player signals ready.
     signaling.onAudioChunk = (event) {
-      if (!_isActive || !_playerReady) return;
+      if (!_isActive) return;
       if (event['senderUserId'] == signaling.userId) return;
       final data = event['data'] as String?;
       if (data == null || data.isEmpty) return;
@@ -102,6 +88,24 @@ class VoipRelayService {
         debugPrint('VoipRelay: decode error: $e');
       }
     };
+
+    try {
+      await _player.openPlayer();
+      await _player.startPlayerFromStream(
+        codec: Codec.pcm16,
+        numChannels: 1,
+        sampleRate: 16000,
+        bufferSize: 1024,
+        interleaved: true,
+      );
+      // Let the Android AudioTrack initialise before live data is pushed.
+      await Future.delayed(const Duration(milliseconds: 80));
+      _playerReady = true;
+      _flushPrePlayerQueue();
+      debugPrint('VoipRelay: player ready');
+    } catch (e) {
+      debugPrint('VoipRelay: player setup error: $e');
+    }
   }
 
   void _playPcmChunk(Uint8List bytes) {

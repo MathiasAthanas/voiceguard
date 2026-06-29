@@ -234,9 +234,15 @@ class SignalingHub:
                     "data": data,
                 })
             except Exception:
-                pass
-        # Do not queue audio chunks for HTTP-polling clients — they would be
-        # stale by the time they are polled.
+                # Mirror _send_to's behaviour: remove the dead socket so that
+                # subsequent chunks don't silently fail against the same stale
+                # entry. Without this, one dropped connection causes permanent
+                # one-way audio for the rest of the call.
+                async with self._lock:
+                    if self._websockets.get(target_user_id) is target_ws:
+                        self._websockets.pop(target_user_id, None)
+        # Audio chunks are not queued for HTTP-polling clients — they would be
+        # several seconds stale by the time they are polled.
 
     async def stats(self) -> Dict[str, Any]:
         async with self._lock:
