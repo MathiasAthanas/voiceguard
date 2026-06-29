@@ -61,18 +61,18 @@ class VadProcessor {
 
   // ── Tuneable parameters (speech / speakerphone enrollment) ───────────────
 
-  /// Minimum peak for speakerphone enrollment — the mic sees WebRTC-compressed
-  /// audio which is naturally quieter than a clean recording. 80 still rejects
-  /// DC-offset / pure noise while allowing realistic caller levels.
-  static const double _speechMinPeak = 80.0;
+  /// Minimum peak for speech/enrollment mode. ADB VOICE_DOWNLINK captures are
+  /// significantly quieter than mic-captured audio (raw decoded RTP vs WebRTC
+  /// AEC output), so this is set lower than the original 80.0.
+  static const double _speechMinPeak = 40.0;
 
-  /// Absolute RMS floor for voiced frames in speech mode. Lowered from 320 to
-  /// 150 because WebRTC AEC reduces the caller's level significantly; raising
-  /// _voicedRatio to 0.25 compensates by being more selective relative to peak.
-  static const double _speechVoicedFloor = 150.0;
+  /// Absolute RMS floor for voiced frames in speech mode. Lowered from 150 to
+  /// 60 to handle ADB VOICE_DOWNLINK, which has much lower amplitude than
+  /// speakerphone mic capture. The adaptive ratio gate (_speechVoicedRatio)
+  /// still filters background noise relative to the clip's own peak.
+  static const double _speechVoicedFloor = 60.0;
 
-  /// Fraction of peak RMS that counts as "voiced" in speech mode. Higher ratio
-  /// (0.25 vs 0.18) keeps only the louder frames — speech not background hiss.
+  /// Fraction of peak RMS that counts as "voiced" in speech mode.
   static const double _speechVoicedRatio = 0.25;
 
   /// A contiguous kept run must be at least this long.

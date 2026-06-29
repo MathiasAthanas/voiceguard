@@ -1,76 +1,101 @@
-import torch
-import numpy as np
 import os
 
-# SpeechBrain 1.0+ moved to speechbrain.inference; keep fallback for 0.5.x
-try:
-    from speechbrain.inference.speaker import SpeakerRecognition
-except ImportError:
-    from speechbrain.pretrained import SpeakerRecognition  # type: ignore
+import numpy as np
+import torch
+import torch.nn.functional as F
+from transformers import Wav2Vec2FeatureExtractor, WavLMForXVector
+
+# Override via WAVLM_MODEL_ID env var if the default ID changes on HuggingFace.
+WAVLM_MODEL_ID = os.getenv("WAVLM_MODEL_ID", "microsoft/wavlm-base-plus-sv")
+
+# ECAPA-TDNN produced 192-dim embeddings. WavLM produces 512-dim.
+# Any voiceprint with 192 dims was enrolled under the old model and is stale.
+ECAPA_LEGACY_DIM = 192
 
 
-class ECAPATDNNModel:
+class WavLMSpeakerModel:
     """
-    ECAPA-TDNN Speaker Verification Model.
-    Uses SpeechBrain's pretrained ECAPA-TDNN to extract
-    speaker embeddings and compute similarity scores.
+    WavLM-Base+ speaker verification model (replaces ECAPA-TDNN).
+
+    WavLM was pretrained with a masked-speech denoising objective, making its
+    representations inherently robust to codec compression, bandpass filtering,
+    and AGC effects present in cellular/VoIP audio — the exact conditions where
+    ECAPA-TDNN (trained on clean VoxCeleb) produced inverted verdicts.
+
+    Embedding dimension: 512 (vs ECAPA's 192).
+    All contacts enrolled with ECAPA must be re-enrolled.
     """
 
     def __init__(self):
         self.model = None
+        self.feature_extractor = None
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self._load_model()
 
     def _load_model(self):
         try:
-            print("Loading ECAPA-TDNN speaker verification model...")
-            self.model = SpeakerRecognition.from_hparams(
-                source="speechbrain/spkrec-ecapa-voxceleb",
-                savedir=os.path.join(os.getenv("WEIGHTS_DIR", "weights"), "ecapa_tdnn"),
-                run_opts={"device": self.device},
+            print(f"Loading WavLM speaker verification model ({WAVLM_MODEL_ID})...")
+            weights_dir = os.path.join(
+                os.getenv("WEIGHTS_DIR", "weights"), "wavlm_speaker"
             )
-            print(f"ECAPA-TDNN loaded on {self.device}")
+            self.feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(
+                WAVLM_MODEL_ID, cache_dir=weights_dir
+            )
+            self.model = WavLMForXVector.from_pretrained(
+                WAVLM_MODEL_ID, cache_dir=weights_dir
+            )
+            self.model.eval()
+            self.model.to(self.device)
+            print(f"WavLM speaker model loaded on {self.device}")
+            print(
+                "IMPORTANT: ECAPA voiceprints (192-dim) are incompatible with WavLM. "
+                "All contacts must be re-enrolled."
+            )
         except Exception as e:
-            print(f"Warning: Could not load ECAPA-TDNN model: {e}")
+            print(f"Warning: Could not load WavLM model: {e}")
+            print(
+                f"Check that '{WAVLM_MODEL_ID}' is a valid HuggingFace model ID, "
+                "or override with the WAVLM_MODEL_ID environment variable."
+            )
             self.model = None
+            self.feature_extractor = None
 
     def get_embedding(self, audio: np.ndarray, sample_rate: int = 16000) -> np.ndarray:
-        """
-        Extract speaker embedding from audio array.
-        Returns a 192-dimensional embedding vector.
-        """
-        if self.model is None:
-            raise RuntimeError("ECAPA-TDNN model not loaded")
+        if self.model is None or self.feature_extractor is None:
+            raise RuntimeError("WavLM speaker model not loaded")
 
-        # Reject silent audio early
         rms = float(np.sqrt(np.mean(audio ** 2)))
         if rms < 0.001:
             raise ValueError("Audio is silent — no speech detected")
 
-        audio_tensor = torch.FloatTensor(audio).unsqueeze(0).to(self.device)
-
-        # wav_lens must be relative lengths in [0, 1] — full length = 1.0
-        wav_lens = torch.ones(1).to(self.device)
+        inputs = self.feature_extractor(
+            audio,
+            sampling_rate=sample_rate,
+            return_tensors="pt",
+            padding=True,
+        )
+        inputs = {k: v.to(self.device) for k, v in inputs.items()}
 
         with torch.no_grad():
-            embedding = self.model.encode_batch(audio_tensor, wav_lens)
+            outputs = self.model(**inputs)
+            embedding = outputs.embeddings  # shape: (1, embedding_dim)
 
-        # encode_batch returns (batch, 1, embedding_dim) — squeeze to (embedding_dim,)
+        embedding = F.normalize(embedding, dim=-1)
         return embedding.squeeze().cpu().numpy()
 
-    def compute_similarity(self, embedding1: np.ndarray, embedding2: np.ndarray) -> float:
-        """
-        Compute cosine similarity between two speaker embeddings.
-        Returns a score between -1 and 1 (higher = more similar).
-        """
+    def compute_similarity(
+        self, embedding1: np.ndarray, embedding2: np.ndarray
+    ) -> float:
+        if embedding1.shape != embedding2.shape:
+            raise ValueError(
+                f"Embedding shape mismatch ({embedding1.shape} vs {embedding2.shape}). "
+                "Contact was likely enrolled with a different model — please re-enroll."
+            )
         norm1 = np.linalg.norm(embedding1)
         norm2 = np.linalg.norm(embedding2)
-
         if norm1 == 0 or norm2 == 0:
             return 0.0
-
-        similarity = np.dot(embedding1, embedding2) / (norm1 * norm2)
-        return float(similarity)
+        return float(np.dot(embedding1, embedding2) / (norm1 * norm2))
 
     def verify(
         self,
@@ -79,14 +104,8 @@ class ECAPATDNNModel:
         threshold: float = 0.75,
         sample_rate: int = 16000,
     ) -> dict:
-        """
-        Verify if test audio matches enrolled speaker.
-        Returns verification result with score and decision.
-        """
         test_embedding = self.get_embedding(test_audio, sample_rate)
         similarity = self.compute_similarity(enrolled_embedding, test_embedding)
-
-        # Normalize to 0-1 confidence range
         confidence = (similarity + 1) / 2
 
         return {
@@ -97,12 +116,11 @@ class ECAPATDNNModel:
         }
 
 
-# Singleton instance
 _instance = None
 
 
-def get_ecapa_model() -> ECAPATDNNModel:
+def get_ecapa_model() -> WavLMSpeakerModel:
     global _instance
     if _instance is None:
-        _instance = ECAPATDNNModel()
+        _instance = WavLMSpeakerModel()
     return _instance

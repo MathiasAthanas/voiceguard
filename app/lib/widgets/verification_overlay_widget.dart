@@ -21,6 +21,12 @@ class VerificationOverlayWidget extends StatelessWidget {
       result.verdict == VerificationVerdict.verified ||
       result.verdict == VerificationVerdict.verifiedHigh;
 
+  // uncertain/notVerified means the model couldn't make a confident call —
+  // show in warning orange, not danger red (not the same as spoof/impostor).
+  bool get _isUncertain =>
+      result.verdict == VerificationVerdict.uncertain ||
+      result.verdict == VerificationVerdict.notVerified;
+
   // uncertain with confidence == 0 means no segment has been processed yet —
   // show as loading, not as a verdict.
   bool get _isEarlyUncertain =>
@@ -29,7 +35,11 @@ class VerificationOverlayWidget extends StatelessWidget {
   bool get _hasVerdict =>
       !_isIdle && !_isAnalyzing && !_isEarlyUncertain && !_isNotEnrolled;
 
-  Color get _accentColor => _isReal ? AppColors.verified : AppColors.danger;
+  Color get _accentColor {
+    if (_isReal) return AppColors.verified;
+    if (_isUncertain) return AppColors.warning;
+    return AppColors.danger;
+  }
 
   bool get _isSubtle => !_hasVerdict;
 
@@ -78,8 +88,18 @@ class VerificationOverlayWidget extends StatelessWidget {
 
   Widget _buildVerdict() {
     final color = _accentColor;
-    final icon = _isReal ? Icons.verified_user_rounded : Icons.gpp_bad_rounded;
-    final title = _isReal ? 'Real speaker' : 'Fake speaker';
+    final IconData icon;
+    final String title;
+    if (_isReal) {
+      icon = Icons.verified_user_rounded;
+      title = 'Real speaker';
+    } else if (_isUncertain) {
+      icon = Icons.help_outline_rounded;
+      title = 'Uncertain';
+    } else {
+      icon = Icons.gpp_bad_rounded;
+      title = 'Fake speaker';
+    }
     final bool showBar = result.confidence > 0;
 
     final bool isSpoof = result.verdict == VerificationVerdict.spoofDetected ||

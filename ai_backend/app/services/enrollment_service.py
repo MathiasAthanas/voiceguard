@@ -44,9 +44,13 @@ class EnrollmentService:
         is_call_time = source_quality == "low"
         # High-quality enrollment requires at least 2 samples so the
         # consistency check is meaningful (1 sample always scores 1.0).
-        min_valid_samples = 2 if is_call_time else 2
+        # Call-time audio requires more samples because quality is lower and
+        # the first two segments are discarded by the Flutter side (10 s warmup).
+        min_valid_samples = 3 if is_call_time else 2
         min_duration_seconds = 1.0 if is_call_time else 2.0
-        consistency_threshold = 0.15 if is_call_time else 0.45
+        # 0.15 accepted virtually any two segments as consistent; 0.40 was too
+        # strict and rejected most cellular audio. 0.25 is the calibrated middle.
+        consistency_threshold = 0.25 if is_call_time else 0.45
 
         embeddings = []
         secondary_embeddings = []

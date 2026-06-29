@@ -319,7 +319,12 @@ class VerificationService extends ChangeNotifier {
       final response = await _dio.get('/enroll/status/$contactId');
       return response.data['is_enrolled'] == true;
     } catch (e) {
-      return false;
+      // Network error: assume enrolled to avoid overwriting an existing
+      // voiceprint on a transient connectivity failure. A false-negative here
+      // (wrongly triggering auto-enrollment for an unenrolled contact) would
+      // silently capture the wrong speaker's voice as the enrolled identity —
+      // a much worse outcome than skipping enrollment on a bad connection.
+      return true;
     }
   }
 

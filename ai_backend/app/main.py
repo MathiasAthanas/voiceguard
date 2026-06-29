@@ -1,14 +1,14 @@
+from dotenv import load_dotenv
+load_dotenv()
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
 import os
 import socket
 
 import app.database as db
 from app.api import enroll, verify, health, signaling, dashboard
 from app.stats_store import get_stats_store
-
-load_dotenv()
 
 app = FastAPI(
     title="VoiceGuard AI Backend",
@@ -43,6 +43,9 @@ async def startup_event():
     port = os.getenv("PORT", "8000")
     print("VoiceGuard AI Backend started")
     print(f"Voiceprints directory: {os.getenv('VOICEPRINTS_DIR', 'voiceprints')}")
+    print(f"Thresholds: VERIFICATION={os.getenv('VERIFICATION_THRESHOLD', '0.75')} "
+          f"HIGH={os.getenv('VERIFICATION_HIGH_THRESHOLD', '0.90')} "
+          f"LOW={os.getenv('VERIFICATION_LOW_THRESHOLD', '0.55')}")
     print(f"Backend listening on: http://{host}:{port}")
     print("Use this backend URL in the mobile app:")
     for url in _network_urls(port):

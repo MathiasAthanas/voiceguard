@@ -17,11 +17,11 @@ from app.utils.embedding_utils import (
 
 logger = logging.getLogger(__name__)
 
-VERIFICATION_THRESHOLD = float(os.getenv("VERIFICATION_THRESHOLD", 0.35))
-HIGH_THRESHOLD = float(os.getenv("VERIFICATION_HIGH_THRESHOLD", 0.65))
-LOW_THRESHOLD = float(os.getenv("VERIFICATION_LOW_THRESHOLD", 0.20))
-SECONDARY_WARNING_MARGIN = float(os.getenv("SECONDARY_WARNING_MARGIN", 0.12))
-CALL_AUDIO_CONFIDENCE_FLOOR = float(os.getenv("CALL_AUDIO_CONFIDENCE_FLOOR", 0.40))
+# WavLM-Base+ similarities sit higher than ECAPA. Starting values — calibrate
+# after testing with enrolled contacts over real cellular/VoIP audio.
+VERIFICATION_THRESHOLD = float(os.getenv("VERIFICATION_THRESHOLD", 0.75))
+HIGH_THRESHOLD = float(os.getenv("VERIFICATION_HIGH_THRESHOLD", 0.90))
+LOW_THRESHOLD = float(os.getenv("VERIFICATION_LOW_THRESHOLD", 0.55))
 
 
 class VerificationService:
@@ -148,6 +148,23 @@ class VerificationService:
         anti_spoofing: dict,
     ) -> dict:
         enrolled_embedding = load_voiceprint(contact_id)
+
+        # Voiceprints from the old ECAPA-TDNN model are 192-dim; WavLM produces
+        # 512-dim embeddings. Computing similarity across these spaces is meaningless.
+        if enrolled_embedding.ndim == 1 and enrolled_embedding.shape[0] == 192:
+            logger.warning(
+                "Stale ECAPA voiceprint detected for '%s' — re-enrollment required",
+                contact_id,
+            )
+            return self._base_result(
+                contact_id=contact_id,
+                verdict="not_enrolled",
+                label="Re-enrollment required — model was upgraded",
+                error="Contact was enrolled with old ECAPA model. Please re-enroll.",
+                segments_analyzed=segments_analyzed,
+                anti_spoofing=anti_spoofing,
+            )
+
         try:
             result = self.ecapa.verify(
                 enrolled_embedding,
@@ -155,7 +172,7 @@ class VerificationService:
                 threshold=VERIFICATION_THRESHOLD,
             )
         except ValueError as exc:
-            logger.warning("ECAPA-TDNN rejected audio for '%s': %s", contact_id, exc)
+            logger.warning("WavLM rejected audio for '%s': %s", contact_id, exc)
             return self._base_result(
                 contact_id=contact_id,
                 verdict="silent",
@@ -165,14 +182,14 @@ class VerificationService:
                 anti_spoofing=anti_spoofing,
             )
         except Exception as exc:
-            logger.exception("ECAPA-TDNN inference error for '%s': %s", contact_id, exc)
+            logger.exception("WavLM inference error for '%s': %s", contact_id, exc)
             raise
 
         similarity = float(result["similarity_score"])
         confidence = float(result["confidence"])
         is_same = bool(result["is_same_speaker"])
         return {
-            "model": "ecapa_tdnn",
+            "model": "wavlm_base_plus",
             "available": True,
             "similarity_score": similarity,
             "confidence": confidence,
@@ -214,42 +231,24 @@ class VerificationService:
         secondary: dict,
         anti_spoofing: dict,
         contact_id: str,
-        media_source: str = "unknown",
+        media_source: str = "unknown",  # kept for API compatibility
     ):
         primary_match = bool(primary["is_same_speaker"])
         primary_similarity = float(primary["similarity_score"])
-        secondary_available = bool(secondary.get("available"))
-        secondary_match = bool(secondary.get("is_same_speaker", False))
-        secondary_similarity = secondary.get("similarity_score")
-        secondary_threshold = float(secondary.get("threshold_used", 0.62))
 
-        secondary_strong_disagreement = (
-            primary_match
-            and secondary_available
-            and not secondary_match
-            and secondary_similarity is not None
-            and float(secondary_similarity) < (secondary_threshold - SECONDARY_WARNING_MARGIN)
-        )
+        # Secondary CNN+LSTM speaker embedding is kept for telemetry but excluded
+        # from the verdict: it scored 92% for the true speaker and 90% for an
+        # impostor in real-world testing — no discriminative value.
+        # The media_source bypass is also removed: it was a client-controlled
+        # string that could return "verified" even when ECAPA said mismatch.
 
-        # The current CNN+LSTM anti-spoofing model is useful as telemetry, but
-        # it has produced false positives on real phone-call audio. For the
-        # test/presentation build, do not let it override speaker verification.
-        # The spoof probability is still returned in the response for history
-        # and dashboard review.
         if primary_match and primary_similarity >= HIGH_THRESHOLD:
-            return "verified_high", f"Verified - This is {contact_id}", True
+            return "verified_high", f"Verified — this is {contact_id}", True
         if primary_match:
-            if secondary_available and secondary_match:
-                return "verified", f"Likely {contact_id} - both models agree", True
             return "verified", f"Likely {contact_id}", True
-        if (
-            ("_vad" in media_source or "voip_local_mic" in media_source)
-            and float(primary["confidence"]) >= CALL_AUDIO_CONFIDENCE_FLOOR
-        ):
-            return "verified", f"Likely {contact_id} - call audio is noisy", True
         if primary_similarity < LOW_THRESHOLD:
             return "not_verified", f"Does NOT sound like {contact_id}", False
-        return "uncertain", "Uncertain - audio too noisy to confirm", False
+        return "uncertain", "Uncertain — audio quality too low to confirm", False
 
     def _base_result(
         self,

@@ -87,8 +87,14 @@ class _InCallScreenState extends State<InCallScreen> {
   // ── Auto-enrollment state ─────────────────────────────────────────────────
   bool _enrollmentMode = false;
   bool _enrollmentComplete = false;
+  bool _enrollmentInProgress = false;
   final List<String> _enrollmentSegments = [];
   String _enrollmentStatus = '';
+  // How many segments have arrived since monitoring started. The first two
+  // (10 s) are discarded: call audio is unstable at start (AGC settling,
+  // high packet-loss burst, short "Hello?" utterance). Only segments 3+
+  // are used for enrollment so the voiceprint is built on stable audio.
+  int _enrollSkipCount = 0;
 
   // Whether we already retried cellular capture with the MIC source after
   // VOICE_RECOGNITION returned silence (Android 12–13 restriction).
@@ -423,6 +429,22 @@ class _InCallScreenState extends State<InCallScreen> {
       _segmentHandler = (filePath) async {
         if (!mounted || !_isMonitoring) return;
 
+        // Discard the first 2 segments (10 s). The very start of a call has
+        // the worst audio quality: AGC is still settling, jitter buffers are
+        // filling, and the first utterance is often a short "Hello?" with more
+        // silence than speech. Voiceprints built from these segments enroll
+        // badly and then fail to match the same speaker later in the call.
+        _enrollSkipCount++;
+        if (_enrollSkipCount <= 2) {
+          if (mounted) {
+            setState(() {
+              _enrollmentStatus =
+                  'Waiting for call to stabilise (0/$target)…';
+            });
+          }
+          return;
+        }
+
         // The recorder deletes filePath once this callback returns.
         // Copy to a persistent temp file so earlier segments survive.
         try {
@@ -450,6 +472,13 @@ class _InCallScreenState extends State<InCallScreen> {
           return;
         }
 
+        // Guard: if a previous enrollment call is still in flight (WavLM
+        // inference + network), new segments arriving during that wait must
+        // not fire a second concurrent enrollment call. Without this, each
+        // segment above the target fires its own API request.
+        if (_enrollmentInProgress) return;
+        _enrollmentInProgress = true;
+
         if (mounted) {
           setState(() => _enrollmentStatus = 'Processing voice profile…');
         }
@@ -461,6 +490,7 @@ class _InCallScreenState extends State<InCallScreen> {
           audioPaths: List.from(_enrollmentSegments),
           sourceQuality: 'low',
         );
+        _enrollmentInProgress = false;
 
         // Always clean up the persistent copies we made.
         for (final p in List<String>.from(_enrollmentSegments)) {
@@ -488,6 +518,8 @@ class _InCallScreenState extends State<InCallScreen> {
           // Backend rejected the segments (too short, too noisy, etc.).
           // Reset and try again with fresh segments this call.
           _enrollmentSegments.clear();
+          _enrollSkipCount = 0;
+          _enrollmentInProgress = false;
           if (mounted) {
             setState(() {
               _enrollmentComplete = false;
@@ -1251,6 +1283,7 @@ class _InCallScreenState extends State<InCallScreen> {
 
     return Scaffold(
       backgroundColor: AppColors.background,
+      resizeToAvoidBottomInset: false,
       body: SafeArea(
         child: Column(
           children: [
