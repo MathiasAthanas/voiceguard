@@ -66,13 +66,12 @@ class VadProcessor {
   /// AEC output), so this is set lower than the original 80.0.
   static const double _speechMinPeak = 40.0;
 
-  /// Absolute RMS floor for voiced frames in speech mode. Lowered 150→60→45 to
-  /// stop chopping off SOFT speakers (quiet voices sat below 60, so most of
-  /// their frames were dropped and the clip was rejected as "silent"). The
-  /// adaptive ratio gate (_speechVoicedRatio) still filters background noise
-  /// relative to the clip's own peak, so loud speakers are unaffected. If quiet
-  /// speakers still get dropped, lower further toward 30.
-  static const double _speechVoicedFloor = 45.0;
+  /// Absolute RMS floor for voiced frames in speech mode. Tuned 150→60→45→50:
+  /// 60 chopped off SOFT speakers, 45 let in a bit too much noise, 50 is the
+  /// observed sweet spot. The adaptive ratio gate (_speechVoicedRatio) still
+  /// filters background noise relative to the clip's own peak, so loud speakers
+  /// are unaffected. Move toward 45/30 if quiet speakers get dropped again.
+  static const double _speechVoicedFloor = 50.0;
 
   /// Fraction of peak RMS that counts as "voiced" in speech mode.
   static const double _speechVoicedRatio = 0.25;
