@@ -21,6 +21,7 @@ venv/
 
 # Runtime data and downloaded model artifacts
 ai_backend/voiceprints/
+ai_backend/debug_audio/
 ai_backend/weights/
 ai_backend/pretrained_models/
 ai_backend/dashboard.db

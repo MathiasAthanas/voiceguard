@@ -37,8 +37,33 @@ class VerificationService extends ChangeNotifier {
   static const double _minConfidenceForVerified = 0.65;
   final List<VerificationResultModel> _resultWindow = [];
 
+  // ── Sticky verdict (display only) ──────────────────────────────────────────
+  // Once a confident Real/Not-real verdict is established, hold it on screen
+  // through uncertain (cross-talk / noisy) patches instead of blanking to
+  // "Checking". After more than one consecutive uncertain segment we also flag
+  // [analysing] so the UI can show an "Analysing — multiple voices" sub-line:
+  // the user sees we still know who they are, but we're re-checking the current
+  // audio. Cleared on a new call. Does NOT affect detection or saved records.
+  VerificationResultModel? _heldResult;
+  int _uncertainStreak = 0;
+
   VerificationResultModel get latestResult => _latestResult;
   bool get isVerifying => _isVerifying;
+
+  bool get _isUncertainNow =>
+      _latestResult.verdict == VerificationVerdict.uncertain ||
+      _latestResult.verdict == VerificationVerdict.secondaryWarning;
+
+  /// What the overlay should show: the held verdict during uncertain patches,
+  /// otherwise the live result (idle/Checking at call start, Real/Not real once
+  /// committed).
+  VerificationResultModel get displayResult =>
+      (_isUncertainNow && _heldResult != null) ? _heldResult! : _latestResult;
+
+  /// True while holding a verdict through a sustained (>1 segment) uncertain
+  /// patch — the UI shows the "Analysing…" sub-line.
+  bool get analysing =>
+      _isUncertainNow && _heldResult != null && _uncertainStreak >= 2;
 
   void _notifySafely() {
     final phase = SchedulerBinding.instance.schedulerPhase;
@@ -212,6 +237,23 @@ class VerificationService extends ChangeNotifier {
     if (_resultWindow.length > _windowSize) _resultWindow.removeAt(0);
 
     _latestResult = _smoothedResult(result);
+
+    // Sticky verdict bookkeeping: remember the last confident verdict; count
+    // consecutive uncertain segments since then (for the "Analysing" sub-line).
+    switch (_latestResult.verdict) {
+      case VerificationVerdict.verified:
+      case VerificationVerdict.verifiedHigh:
+      case VerificationVerdict.notVerified:
+        _heldResult = _latestResult;
+        _uncertainStreak = 0;
+        break;
+      case VerificationVerdict.uncertain:
+      case VerificationVerdict.secondaryWarning:
+        _uncertainStreak++;
+        break;
+      default:
+        break;
+    }
   }
 
   VerificationResultModel _smoothedResult(VerificationResultModel latest) {
@@ -228,6 +270,15 @@ class VerificationService extends ChangeNotifier {
         ? latest.similarityScore
         : scoreItems.map((r) => r.similarityScore!).reduce((a, b) => a + b) /
             scoreItems.length;
+
+    // Presentational confidence (backend-computed, threshold-anchored) — smooth
+    // it the same way so the displayed % tracks the windowed result.
+    final displayItems =
+        _resultWindow.where((r) => r.displayConfidence != null).toList();
+    final avgDisplay = displayItems.isEmpty
+        ? latest.displayConfidence
+        : displayItems.map((r) => r.displayConfidence!).reduce((a, b) => a + b) /
+            displayItems.length;
 
     // ── Majority-vote verdict ──────────────────────────────────────────────
     // A categorical spoof alert requires repeated evidence. The current
@@ -264,6 +315,7 @@ class VerificationService extends ChangeNotifier {
         verdict: smoothedVerdict,
         confidence: avgConfidence,
         similarity: avgSimilarity,
+        display: avgDisplay,
         isVerified: smoothedVerdict == VerificationVerdict.verified ||
             smoothedVerdict == VerificationVerdict.verifiedHigh,
         isSpoof: false);
@@ -274,6 +326,7 @@ class VerificationService extends ChangeNotifier {
     required VerificationVerdict verdict,
     required double confidence,
     double? similarity,
+    double? display,
     required bool isVerified,
     required bool isSpoof,
   }) {
@@ -295,6 +348,7 @@ class VerificationService extends ChangeNotifier {
       verdict: verdict,
       confidence: confidence,
       similarityScore: similarity,
+      displayConfidence: display,
       spoofProbability: base.spoofProbability,
       isVerified: isVerified,
       isSpoof: isSpoof,
@@ -352,6 +406,8 @@ class VerificationService extends ChangeNotifier {
   void resetResult() {
     _sessionId++;
     _resultWindow.clear();
+    _heldResult = null;
+    _uncertainStreak = 0;
     _latestResult = VerificationResultModel.idle();
     _isVerifying = false;
     _notifySafely();

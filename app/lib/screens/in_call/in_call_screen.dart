@@ -582,7 +582,7 @@ class _InCallScreenState extends State<InCallScreen> {
       // if MIC also fails the caller gets a persistent hint instead.
       _triedMicFallback = true;
       await _callRecorder.startMonitoring(
-        segmentSeconds: 5,
+        segmentSeconds: 8,
         vadMode: VadMode.speech,
         audioSource: CallAudioRecorder.audioSourceMic,
       );
@@ -597,7 +597,7 @@ class _InCallScreenState extends State<InCallScreen> {
       // enrollment does — speaker volume is high enough that some signal
       // survives AEC cancellation.
       await _callRecorder.startMonitoring(
-        segmentSeconds: 5,
+        segmentSeconds: 8,
         vadMode: VadMode.speech,
       );
     }
@@ -859,10 +859,21 @@ class _InCallScreenState extends State<InCallScreen> {
     }
   }
 
+  /// Writes a single detection record for the whole call — the *settled* verdict
+  /// from [VerificationService], not a per-segment ruling. Called once from
+  /// _stopAllMonitoring(); the guard makes repeat end-of-call paths idempotent.
+  ///
+  /// Only a committed verdict is saved. If the call never gathered enough
+  /// consistent evidence (still "Checking…"), nothing is written — we don't
+  /// record a guess.
   Future<void> _saveDetectionRecord(VerificationResultModel result) async {
-    if (result.verdict == VerificationVerdict.silent ||
-        result.verdict == VerificationVerdict.idle ||
-        result.verdict == VerificationVerdict.analyzing) {
+    // Only persist a committed flag (Real / Not real). Transient and uncertain
+    // segments are shown live as "Checking…" but never written to history, so
+    // the list stays a clean binary.
+    if (result.verdict != VerificationVerdict.verified &&
+        result.verdict != VerificationVerdict.verifiedHigh &&
+        result.verdict != VerificationVerdict.notVerified &&
+        result.verdict != VerificationVerdict.spoofDetected) {
       return;
     }
     try {
@@ -876,6 +887,7 @@ class _InCallScreenState extends State<InCallScreen> {
         'verdict': result.verdict.name,
         'confidence': result.confidence,
         'similarityScore': result.similarityScore,
+        'displayConfidence': result.displayConfidence,
         'spoofProbability': result.spoofProbability,
         'secondarySimilarityScore': result.secondarySimilarityScore,
         'secondaryAvailable': result.secondaryAvailable,
@@ -1278,8 +1290,7 @@ class _InCallScreenState extends State<InCallScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final verificationResult =
-        context.watch<VerificationService>().latestResult;
+    final verificationService = context.watch<VerificationService>();
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -1475,7 +1486,7 @@ class _InCallScreenState extends State<InCallScreen> {
             if (!_enrollmentMode) ...[
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 24),
-                child: VerificationOverlayWidget(result: verificationResult),
+                child: VerificationOverlayWidget(service: verificationService),
               ),
             ],
 

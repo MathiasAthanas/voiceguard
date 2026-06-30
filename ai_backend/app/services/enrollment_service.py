@@ -1,15 +1,30 @@
+import os
+
 import numpy as np
 
 from app.models.cnn_lstm_voiceguard import get_cnn_lstm_speaker_embedding_model
 from app.models.ecapa_tdnn import get_ecapa_model
 from app.services.audio_processor import get_audio_processor
-from app.utils.audio_utils import is_speech, load_audio_from_bytes, normalize_audio
+from app.utils.audio_utils import (
+    is_speech,
+    load_audio_from_bytes,
+    normalize_audio,
+    simulate_telephone,
+)
+from app.utils.debug_audio import save_debug_audio
 from app.utils.embedding_utils import (
     save_voiceprint,
+    save_voiceprint_set,
     save_secondary_voiceprint,
     voiceprint_exists,
     average_embeddings,
 )
+
+
+def _enroll_augmentation_enabled() -> bool:
+    return os.getenv("ENABLE_ENROLL_AUGMENTATION", "true").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
 
 
 class EnrollmentService:
@@ -52,10 +67,15 @@ class EnrollmentService:
         # strict and rejected most cellular audio. 0.25 is the calibrated middle.
         consistency_threshold = 0.25 if is_call_time else 0.45
 
+        # Clean per-sample embeddings drive the consistency check; codec-
+        # augmented templates (Fix 5) are appended to the stored set afterwards
+        # so they don't drag the clean-vs-clean consistency score down.
         embeddings = []
+        augmented_embeddings = []
         secondary_embeddings = []
         accepted_metrics = []
         rejected_samples = []
+        augment = _enroll_augmentation_enabled()
 
         for i, audio_bytes in enumerate(audio_bytes_list):
             try:
@@ -85,6 +105,26 @@ class EnrollmentService:
                 audio = self.processor.process_for_enrollment(audio_bytes)
                 embedding = self.ecapa.get_embedding(audio)
                 embeddings.append(embedding)
+
+                # Debug: save the exact audio this enrollment embedding was built
+                # from, so it can be listened to (off unless DEBUG_SAVE_AUDIO=true).
+                save_debug_audio(contact_id, f"enroll{i + 1}", audio,
+                                 self.processor.sample_rate)
+
+                # Fix 5: add a telephone-codec-simulated template so the stored
+                # set spans both the clean and cellular domains. Skip for
+                # call-time audio (already telephone-domain) and never let a
+                # failed augmentation block enrollment.
+                if augment and not is_call_time:
+                    try:
+                        tele = simulate_telephone(audio, self.processor.sample_rate)
+                        augmented_embeddings.append(self.ecapa.get_embedding(tele))
+                    except Exception as aug_error:
+                        print(
+                            f"Warning: codec augmentation failed for sample "
+                            f"{i + 1}: {aug_error}"
+                        )
+
                 if self.secondary.available:
                     try:
                         secondary_embeddings.append(self.secondary.get_embedding(audio))
@@ -130,13 +170,12 @@ class EnrollmentService:
                 "rejected_samples": rejected_samples,
             }
 
-        # Average embeddings for more robust voiceprint
-        if len(embeddings) > 1:
-            final_embedding = average_embeddings(embeddings)
-        else:
-            final_embedding = embeddings[0]
+        # Fix 2: store every template separately (clean + codec-augmented) and
+        # score-average at verification time, instead of collapsing to one
+        # averaged centroid that a similar voice can sit near.
+        template_set = embeddings + augmented_embeddings
+        save_voiceprint_set(contact_id, template_set)
 
-        save_voiceprint(contact_id, final_embedding)
         secondary_saved = False
         if secondary_embeddings:
             save_secondary_voiceprint(contact_id, average_embeddings(secondary_embeddings))
@@ -149,10 +188,16 @@ class EnrollmentService:
             "source_quality": source_quality,
             "consistency_score": consistency,
             "quality": accepted_metrics,
-            "embedding_dim": len(final_embedding),
+            "embedding_dim": int(np.asarray(embeddings[0]).shape[-1]),
+            "templates_stored": len(template_set),
+            "clean_templates": len(embeddings),
+            "augmented_templates": len(augmented_embeddings),
             "secondary_embedding_saved": secondary_saved,
             "secondary_embedding_available": self.secondary.available,
-            "message": f"Successfully enrolled {contact_id} with {len(embeddings)} sample(s)",
+            "message": (
+                f"Successfully enrolled {contact_id} with {len(embeddings)} "
+                f"sample(s) ({len(template_set)} templates stored)"
+            ),
         }
 
     def _audio_quality(self, audio: np.ndarray) -> dict:

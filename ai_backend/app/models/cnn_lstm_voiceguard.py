@@ -78,7 +78,13 @@ def audio_to_logmel(audio: np.ndarray) -> np.ndarray:
             top_db=80,
         )
 
-    tensor = torch.from_numpy(audio)
+    # Keep feature extraction on CPU. The CNN/LSTM inference tensors are moved
+    # to self.device later; mixing a CPU waveform with a cached CUDA
+    # MelSpectrogram window/filterbank raises:
+    # "Input type torch.FloatTensor and weight type torch.cuda.FloatTensor".
+    _MEL_TRANSFORM.to("cpu")
+    _DB_TRANSFORM.to("cpu")
+    tensor = torch.from_numpy(audio).float()
     with torch.no_grad():
         logmel = _DB_TRANSFORM(_MEL_TRANSFORM(tensor))
         logmel = (logmel - logmel.mean()) / (logmel.std(unbiased=False) + EPS)

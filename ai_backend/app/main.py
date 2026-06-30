@@ -46,6 +46,10 @@ async def startup_event():
     print(f"Thresholds: VERIFICATION={os.getenv('VERIFICATION_THRESHOLD', '0.75')} "
           f"HIGH={os.getenv('VERIFICATION_HIGH_THRESHOLD', '0.90')} "
           f"LOW={os.getenv('VERIFICATION_LOW_THRESHOLD', '0.55')}")
+    print(f"Speaker model: {os.getenv('SPEAKER_MODEL', 'wavlm')} | "
+          f"score-averaging templates ON | "
+          f"enroll augmentation={os.getenv('ENABLE_ENROLL_AUGMENTATION', 'true')} | "
+          f"speech enhancement={os.getenv('ENABLE_SPEECH_ENHANCEMENT', 'false')}")
     print(f"Backend listening on: http://{host}:{port}")
     print("Use this backend URL in the mobile app:")
     for url in _network_urls(port):

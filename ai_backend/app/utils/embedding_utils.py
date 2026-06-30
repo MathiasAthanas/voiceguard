@@ -8,10 +8,38 @@ SPEAKER_EMBEDDING_SUFFIX = ".cnn_lstm.npy"
 
 
 def save_voiceprint(contact_id: str, embedding: np.ndarray):
-    """Save a speaker embedding (voiceprint) to disk."""
+    """Save a speaker embedding (voiceprint) to disk.
+
+    Accepts either a single embedding (shape (D,)) or a stacked template set
+    (shape (N, D)). The on-disk format is just the numpy array, so the same
+    file transparently holds legacy single-vector and new multi-template
+    voiceprints — load_voiceprint + as_embedding_matrix normalise the shape.
+    """
     os.makedirs(VOICEPRINTS_DIR, exist_ok=True)
     path = os.path.join(VOICEPRINTS_DIR, f"{contact_id}.npy")
-    np.save(path, embedding)
+    np.save(path, np.asarray(embedding, dtype=np.float32))
+
+
+def save_voiceprint_set(contact_id: str, embeddings: list):
+    """Save a set of enrollment templates as a stacked (N, D) array (Fix 2).
+
+    Score-level averaging across separate templates outperforms averaging the
+    embeddings into a single centroid for modern deep speaker models, because a
+    similar-voiced impostor can sit near the centroid yet still score below each
+    individual template.
+    """
+    stacked = np.stack([np.asarray(e, dtype=np.float32) for e in embeddings], axis=0)
+    save_voiceprint(contact_id, stacked)
+
+
+def as_embedding_matrix(arr: np.ndarray) -> np.ndarray:
+    """Normalise a loaded voiceprint to a 2-D (N, D) template matrix.
+
+    Legacy single-vector voiceprints (shape (D,)) become (1, D); new stacked
+    sets (shape (N, D)) pass through unchanged.
+    """
+    a = np.asarray(arr)
+    return a.reshape(1, -1) if a.ndim == 1 else a
 
 
 def save_secondary_voiceprint(contact_id: str, embedding: np.ndarray):

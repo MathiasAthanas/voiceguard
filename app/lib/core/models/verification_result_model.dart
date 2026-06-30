@@ -29,6 +29,9 @@ class VerificationResultModel {
   final bool? secondaryMatched;
   final String? audioRole;
   final String? mediaSource;
+  // Presentational confidence (0..1) from the backend, anchored on the active
+  // model's thresholds. What the UI shows — raw cosine is misleading as a %.
+  final double? displayConfidence;
 
   VerificationResultModel({
     required this.contactId,
@@ -47,6 +50,7 @@ class VerificationResultModel {
     this.secondaryMatched,
     this.audioRole,
     this.mediaSource,
+    this.displayConfidence,
   });
 
   factory VerificationResultModel.idle() {
@@ -147,6 +151,7 @@ class VerificationResultModel {
       verdict: verdict,
       confidence: (json['confidence'] as num?)?.toDouble() ?? 0.0,
       similarityScore: (json['similarity_score'] as num?)?.toDouble(),
+      displayConfidence: (json['display_confidence'] as num?)?.toDouble(),
       spoofProbability: (json['spoof_probability'] as num?)?.toDouble() ?? 0.0,
       isVerified: json['is_verified'] ?? false,
       isSpoof: json['is_spoof'] ?? false,
@@ -184,6 +189,7 @@ class VerificationResultModel {
       'verdict': verdictValue,
       'confidence': confidence,
       'similarity_score': similarityScore,
+      'display_confidence': displayConfidence,
       'spoof_probability': spoofProbability,
       'is_verified': isVerified,
       'is_spoof': isSpoof,

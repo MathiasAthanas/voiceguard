@@ -85,8 +85,13 @@ class _DetectionList extends StatelessWidget {
         final item = items[index];
         final verdict = item['verdict'] as String? ?? 'unknown';
         final color = _verdictColor(verdict);
-        final confidence =
-            ((item['confidence'] as num?)?.toDouble() ?? 0) * 100;
+        // Show the threshold-anchored display confidence (falls back to raw
+        // similarity), so the number agrees with the flag and reads sensibly
+        // regardless of model scale.
+        final shown = ((item['displayConfidence'] as num?)?.toDouble() ??
+                (item['similarityScore'] as num?)?.toDouble() ??
+                0) *
+            100;
         final time = DateTime.tryParse(item['timestamp'] as String? ?? '');
 
         return Container(
@@ -110,7 +115,7 @@ class _DetectionList extends StatelessWidget {
               style: TextStyle(color: color, fontSize: 12),
             ),
             trailing: Text(
-              '${confidence.round()}%',
+              '${shown.round()}%',
               style: TextStyle(color: color, fontWeight: FontWeight.bold),
             ),
             onTap: () => _showDetectionDetails(context, item),
@@ -278,18 +283,19 @@ Widget _detail(String label, Object? value) {
   );
 }
 
+// Real speaker = green; Not real speaker = red. Both the new realSpeaker/
+// notRealSpeaker strings and the per-segment verified/notVerified strings map
+// to the same two flags so history reads as a clean binary.
 Color _verdictColor(String verdict) {
   switch (verdict) {
+    case 'realSpeaker':
     case 'verifiedHigh':
     case 'verified':
       return AppColors.verified;
+    case 'notRealSpeaker':
+    case 'notVerified':
     case 'spoofDetected':
       return AppColors.danger;
-    case 'spoofSuspected':
-      return AppColors.warning;
-    case 'notVerified':
-    case 'secondaryWarning':
-      return AppColors.warning;
     default:
       return Colors.white54;
   }
@@ -297,16 +303,14 @@ Color _verdictColor(String verdict) {
 
 IconData _verdictIcon(String verdict) {
   switch (verdict) {
+    case 'realSpeaker':
     case 'verifiedHigh':
     case 'verified':
       return Icons.verified_user;
+    case 'notRealSpeaker':
+    case 'notVerified':
     case 'spoofDetected':
       return Icons.gpp_bad;
-    case 'spoofSuspected':
-      return Icons.gpp_maybe;
-    case 'notVerified':
-    case 'secondaryWarning':
-      return Icons.warning_amber_rounded;
     default:
       return Icons.help_outline;
   }
@@ -314,20 +318,16 @@ IconData _verdictIcon(String verdict) {
 
 String _verdictLabel(String verdict) {
   switch (verdict) {
+    case 'realSpeaker':
     case 'verifiedHigh':
-      return 'Authentic speaker';
     case 'verified':
-      return 'Likely authentic';
-    case 'spoofDetected':
-      return 'Fake or spoofed voice';
-    case 'spoofSuspected':
-      return 'Possible spoof - more evidence needed';
+      return 'Real speaker';
+    case 'notRealSpeaker':
     case 'notVerified':
-      return 'Speaker not verified';
-    case 'secondaryWarning':
-      return 'Secondary model warning';
+    case 'spoofDetected':
+      return 'Not real speaker';
     default:
-      return 'Uncertain result';
+      return 'Inconclusive';
   }
 }
 

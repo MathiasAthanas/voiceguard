@@ -50,6 +50,24 @@ object AudioCaptureMain {
                 record.startRecording()
                 System.err.println("AudioCapture: streaming to 127.0.0.1:$port")
 
+                // Warm-up drain: VOICE_DOWNLINK returns silence for a short
+                // period after startRecording, and can come back briefly muted
+                // when re-acquired right after a previous session released it.
+                // Read and discard leading all-zero chunks (up to ~1.5 s) so the
+                // first chunk the receiver sees is real audio — and so the HAL
+                // has a moment to recover instead of streaming pure silence.
+                val warmupDeadline = System.currentTimeMillis() + 1_500
+                while (!socket.isClosed && System.currentTimeMillis() < warmupDeadline) {
+                    val n = record.read(buf, 0, bufSize)
+                    if (n <= 0) continue
+                    if (!isAllZero(buf, n)) {
+                        out.writeInt(n)
+                        out.write(buf, 0, n)
+                        out.flush()
+                        break
+                    }
+                }
+
                 while (!socket.isClosed) {
                     val n = record.read(buf, 0, bufSize)
                     if (n <= 0) break
@@ -64,6 +82,11 @@ object AudioCaptureMain {
             try { record.stop() } catch (_: Exception) {}
             record.release()
         }
+    }
+
+    private fun isAllZero(b: ByteArray, n: Int): Boolean {
+        for (i in 0 until n) if (b[i] != 0.toByte()) return false
+        return true
     }
 
     private fun tryCreateAudioRecord(bufSize: Int): AudioRecord? {

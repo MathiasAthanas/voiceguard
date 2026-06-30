@@ -1,13 +1,13 @@
 fastapi==0.104.1
 uvicorn==0.24.0
 python-multipart==0.0.6
-numpy==1.26.4
+numpy==1.24.4
 torch==2.4.1
 torchaudio==2.4.1
 speechbrain>=1.0.0
 librosa==0.10.1
 soundfile==0.12.1
-scipy==1.11.4
+scipy==1.10.1
 pydantic==2.4.2
 python-dotenv==1.0.0
 aiofiles==23.2.1
@@ -17,3 +17,13 @@ transformers>=4.40.0
 safetensors>=0.4.0
 silero-vad>=4.0
 av>=12.0.0
+
+# WeSpeaker backend used when SPEAKER_MODEL=wespeaker.
+# This package is installed from GitHub because it is not published as a normal
+# PyPI package under `pip install wespeaker`.
+git+https://github.com/wenet-e2e/wespeaker.git
+onnxruntime>=1.19.2
+
+# Optional alternatives/features:
+# - TitaNet backend: pip install "nemo_toolkit[asr]"
+# - DeepFilterNet enhancement: pip install deepfilternet

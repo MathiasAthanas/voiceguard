@@ -1,109 +1,81 @@
 import 'package:flutter/material.dart';
 import '../core/constants/app_colors.dart';
 import '../core/models/verification_result_model.dart';
+import '../core/services/verification_service.dart';
 
+/// Live in-call verdict card. Presents the robust per-segment result as one of
+/// two committed flags — **Real speaker** (green) / **Not real speaker** (red) —
+/// or a neutral **Checking…** state before the first verdict.
+///
+/// Sticky behaviour (via [VerificationService.displayResult]): once a verdict is
+/// committed, it's HELD through uncertain/noisy patches instead of blanking to
+/// Checking. During a sustained ambiguous patch ([VerificationService.analysing])
+/// a small "Analysing — multiple voices" sub-line appears under the held verdict,
+/// so the user sees we still know who they are but are re-checking the audio.
 class VerificationOverlayWidget extends StatelessWidget {
-  final VerificationResultModel result;
+  final VerificationService service;
 
-  const VerificationOverlayWidget({super.key, required this.result});
-
-  // ── State helpers ───────────────────────────────────────────────────────────
-
-  bool get _isIdle =>
-      result.verdict == VerificationVerdict.idle ||
-      result.verdict == VerificationVerdict.silent;
-
-  bool get _isAnalyzing => result.verdict == VerificationVerdict.analyzing;
-
-  bool get _isNotEnrolled => result.verdict == VerificationVerdict.notEnrolled;
-
-  bool get _isReal =>
-      result.verdict == VerificationVerdict.verified ||
-      result.verdict == VerificationVerdict.verifiedHigh;
-
-  // uncertain/notVerified means the model couldn't make a confident call —
-  // show in warning orange, not danger red (not the same as spoof/impostor).
-  bool get _isUncertain =>
-      result.verdict == VerificationVerdict.uncertain ||
-      result.verdict == VerificationVerdict.notVerified;
-
-  // uncertain with confidence == 0 means no segment has been processed yet —
-  // show as loading, not as a verdict.
-  bool get _isEarlyUncertain =>
-      result.verdict == VerificationVerdict.uncertain && result.confidence == 0;
-
-  bool get _hasVerdict =>
-      !_isIdle && !_isAnalyzing && !_isEarlyUncertain && !_isNotEnrolled;
-
-  Color get _accentColor {
-    if (_isReal) return AppColors.verified;
-    if (_isUncertain) return AppColors.warning;
-    return AppColors.danger;
-  }
-
-  bool get _isSubtle => !_hasVerdict;
-
-  // ── Build ───────────────────────────────────────────────────────────────────
+  const VerificationOverlayWidget({super.key, required this.service});
 
   @override
   Widget build(BuildContext context) {
+    final result = service.displayResult;
+    final analysing = service.analysing;
+
+    final bool real = result.verdict == VerificationVerdict.verified ||
+        result.verdict == VerificationVerdict.verifiedHigh;
+    final bool notReal = result.verdict == VerificationVerdict.notVerified ||
+        result.verdict == VerificationVerdict.spoofDetected;
+    final bool subtle = !real && !notReal;
+    final Color accent =
+        real ? AppColors.verified : (notReal ? AppColors.danger : Colors.white54);
+
     return AnimatedContainer(
       duration: const Duration(milliseconds: 400),
       curve: Curves.easeInOut,
       width: double.infinity,
       padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 18),
       decoration: BoxDecoration(
-        color: _isSubtle
+        color: subtle
             ? Colors.white.withValues(alpha: 0.04)
-            : _accentColor.withValues(alpha: 0.10),
+            : accent.withValues(alpha: 0.10),
         borderRadius: BorderRadius.circular(20),
         border: Border.all(
-          color: _isSubtle
-              ? Colors.white12
-              : _accentColor.withValues(alpha: 0.35),
+          color: subtle ? Colors.white12 : accent.withValues(alpha: 0.35),
           width: 1.2,
         ),
       ),
-      child: _buildContent(),
+      child: _content(result, real, notReal, accent, analysing),
     );
   }
 
-  Widget _buildContent() {
-    if (_isIdle) {
-      return _buildCentered(Icons.graphic_eq, 'Listening for speech…', Colors.white24);
+  Widget _content(VerificationResultModel result, bool real, bool notReal,
+      Color accent, bool analysing) {
+    if (result.verdict == VerificationVerdict.notEnrolled) {
+      return _centered(
+          Icons.mic_off_rounded, 'Contact not enrolled', Colors.white38);
     }
-    if (_isAnalyzing) {
-      return _buildSpinner();
+    if (real) {
+      return _verdictRow(
+          result, Icons.verified_user_rounded, 'Real speaker', accent, analysing);
     }
-    if (_isEarlyUncertain) {
-      return _buildCentered(Icons.graphic_eq, 'Checking…', Colors.white38);
+    if (notReal) {
+      return _verdictRow(
+          result, Icons.gpp_bad_rounded, 'Not real speaker', accent, analysing);
     }
-    if (_isNotEnrolled) {
-      return _buildCentered(Icons.mic_off_rounded, 'Contact not enrolled', Colors.white38);
-    }
-    return _buildVerdict();
+    // No committed verdict yet (start of call) — gathering audio.
+    return _buildSpinner('Checking caller…');
   }
 
-  // ── Result verdict ──────────────────────────────────────────────────────────
+  // ── Committed verdict (optionally with the "Analysing" sub-line) ─────────────
 
-  Widget _buildVerdict() {
-    final color = _accentColor;
-    final IconData icon;
-    final String title;
-    if (_isReal) {
-      icon = Icons.verified_user_rounded;
-      title = 'Real speaker';
-    } else if (_isUncertain) {
-      icon = Icons.help_outline_rounded;
-      title = 'Uncertain';
-    } else {
-      icon = Icons.gpp_bad_rounded;
-      title = 'Fake speaker';
-    }
-    final bool showBar = result.confidence > 0;
-
-    final bool isSpoof = result.verdict == VerificationVerdict.spoofDetected ||
-        result.verdict == VerificationVerdict.spoofSuspected;
+  Widget _verdictRow(VerificationResultModel result, IconData icon, String title,
+      Color color, bool analysing) {
+    // Threshold-anchored display confidence (falls back to raw similarity);
+    // always agrees with the flag and reads sensibly regardless of model scale.
+    final double? shown = result.displayConfidence ?? result.similarityScore;
+    final bool showBar = shown != null;
+    final int percent = shown == null ? 0 : (shown * 100).round();
 
     return Row(
       children: [
@@ -122,15 +94,30 @@ class VerificationOverlayWidget extends StatelessWidget {
                   letterSpacing: 0.1,
                 ),
               ),
-              if (isSpoof) ...[
-                const SizedBox(height: 3),
-                Text(
-                  'Do not share sensitive information',
-                  style: TextStyle(
-                    color: color,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w500,
-                  ),
+              // Re-checking signal during a sustained ambiguous (cross-talk)
+              // patch — verdict is held, we're working the current audio.
+              if (analysing) ...[
+                const SizedBox(height: 4),
+                Row(
+                  children: [
+                    SizedBox(
+                      width: 11,
+                      height: 11,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 1.6,
+                        color: color.withValues(alpha: 0.8),
+                      ),
+                    ),
+                    const SizedBox(width: 7),
+                    Text(
+                      'Analysing — multiple voices',
+                      style: TextStyle(
+                        color: color.withValues(alpha: 0.85),
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ],
                 ),
               ],
               if (showBar) ...[
@@ -141,7 +128,7 @@ class VerificationOverlayWidget extends StatelessWidget {
                       child: ClipRRect(
                         borderRadius: BorderRadius.circular(3),
                         child: LinearProgressIndicator(
-                          value: result.confidence.clamp(0.0, 1.0),
+                          value: shown.clamp(0.0, 1.0),
                           minHeight: 4,
                           backgroundColor: Colors.white10,
                           valueColor: AlwaysStoppedAnimation<Color>(color),
@@ -150,7 +137,7 @@ class VerificationOverlayWidget extends StatelessWidget {
                     ),
                     const SizedBox(width: 10),
                     Text(
-                      '${result.confidencePercent}%',
+                      '$percent%',
                       style: TextStyle(
                         color: color,
                         fontSize: 13,
@@ -169,7 +156,7 @@ class VerificationOverlayWidget extends StatelessWidget {
 
   // ── Helpers ─────────────────────────────────────────────────────────────────
 
-  Widget _buildCentered(IconData icon, String text, Color color) {
+  Widget _centered(IconData icon, String text, Color color) {
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
@@ -187,11 +174,11 @@ class VerificationOverlayWidget extends StatelessWidget {
     );
   }
 
-  Widget _buildSpinner() {
+  Widget _buildSpinner(String text) {
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        SizedBox(
+        const SizedBox(
           width: 15,
           height: 15,
           child: CircularProgressIndicator(
@@ -200,9 +187,9 @@ class VerificationOverlayWidget extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 10),
-        const Text(
-          'Analyzing voice…',
-          style: TextStyle(
+        Text(
+          text,
+          style: const TextStyle(
             color: AppColors.primary,
             fontSize: 13,
             fontWeight: FontWeight.w600,

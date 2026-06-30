@@ -144,6 +144,50 @@ def normalize_audio(audio: np.ndarray) -> np.ndarray:
     return audio
 
 
+def simulate_telephone(audio: np.ndarray, sample_rate: int = SAMPLE_RATE) -> np.ndarray:
+    """Simulate cellular/telephone-codec degradation of clean audio (Fix 5).
+
+    Used to create a second enrollment template that lives in the same acoustic
+    domain as the VOICE_DOWNLINK audio seen at verification time, closing the
+    clean-enrollment / telephone-test mismatch that compresses inter-speaker
+    separation. Two dominant effects of narrowband telephony are reproduced:
+
+      1. Band-limiting to ~telephone bandwidth by resampling 16k → 8k → 16k
+         (discards all spectral content above 4 kHz).
+      2. G.711 μ-law 8-bit companding + requantization (the codec most cellular
+         downlinks decode to), which adds the characteristic quantization noise.
+
+    No external codec/ffmpeg dependency — pure scipy/numpy, so it always runs.
+    """
+    if audio.size == 0:
+        return audio.astype(np.float32, copy=False)
+
+    a = audio.astype(np.float32)
+    peak = float(np.max(np.abs(a)))
+    if peak > 0:
+        a = a / peak  # μ-law assumes input in [-1, 1]
+
+    # 1) Band-limit: down to 8 kHz and back to the working rate.
+    narrow_sr = 8000
+    g1 = math.gcd(int(sample_rate), narrow_sr)
+    down = signal.resample_poly(a, narrow_sr // g1, int(sample_rate) // g1)
+
+    # 2) G.711 μ-law compand → 8-bit quantize → expand.
+    mu = 255.0
+    companded = np.sign(down) * np.log1p(mu * np.abs(down)) / np.log1p(mu)
+    quantized = np.round(companded * 127.0) / 127.0  # 8-bit μ-law levels
+    expanded = np.sign(quantized) * (1.0 / mu) * ((1.0 + mu) ** np.abs(quantized) - 1.0)
+
+    # Back up to the working sample rate.
+    g2 = math.gcd(int(sample_rate), narrow_sr)
+    up = signal.resample_poly(expanded, int(sample_rate) // g2, narrow_sr // g2)
+
+    # Restore approximate original level.
+    if peak > 0:
+        up = up * peak
+    return up.astype(np.float32, copy=False)
+
+
 def is_speech(
     audio: np.ndarray,
     rms_threshold: float = 0.005,

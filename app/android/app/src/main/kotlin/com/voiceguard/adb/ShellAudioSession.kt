@@ -22,8 +22,15 @@ class ShellAudioSession(
         private const val TAG          = "ShellAudioSession"
         private const val SAMPLE_RATE  = 16_000
         private const val BYTES_PER    = 2          // PCM16
-        private const val SEGMENT_SECS = 5
-        private val SEGMENT_BYTES      = SAMPLE_RATE * BYTES_PER * SEGMENT_SECS  // 160 000
+        // 8 s window (was 5): VAD drops silence, so a longer window yields more
+        // net speech per verification — short clips give unstable, gender-level
+        // embeddings that let same-gender impostors pass.
+        private const val SEGMENT_SECS = 8
+        private val SEGMENT_BYTES      = SAMPLE_RATE * BYTES_PER * SEGMENT_SECS  // 256 000
+        // VOICE_DOWNLINK emits silence while the HAL warms up after
+        // startRecording — longer right after a previous session released it.
+        // Tolerate this much leading silence before declaring the mic blocked.
+        private const val BLOCKED_WARMUP_MS = 3_000L
     }
 
     @Volatile private var running = false
@@ -90,7 +97,13 @@ class ShellAudioSession(
             val din      = DataInputStream(BufferedInputStream(client.getInputStream()))
             val segBuf   = ByteArrayOutputStream(SEGMENT_BYTES)
             var accumulated = 0
-            var firstChunk  = true
+            // Until the first non-silent chunk arrives we are in the warm-up
+            // window: leading all-zero chunks are dropped, not accumulated, and
+            // are NOT treated as a blocked mic unless the whole window elapses
+            // with no audio. This stops a cold first chunk from aborting the
+            // session and forcing a churn of respawns that each start cold too.
+            var sawAudio = false
+            val warmupDeadlineMs = System.currentTimeMillis() + BLOCKED_WARMUP_MS
 
             while (running && !client.isClosed) {
                 val chunkLen = try {
@@ -103,13 +116,20 @@ class ShellAudioSession(
                 val chunk = ByteArray(chunkLen)
                 din.readFully(chunk)
 
-                // Detect hardware mute — same criterion as VadProcessor.
-                if (firstChunk && chunk.all { it == 0.toByte() }) {
-                    Log.w(TAG, "All PCM samples zero — VOICE_DOWNLINK blocked on this device")
-                    onBlocked?.invoke()
-                    break
+                if (!sawAudio) {
+                    if (chunk.all { it == 0.toByte() }) {
+                        // Still warming up — drop the silent chunk. Only give up
+                        // if the entire warm-up window passed with no real audio.
+                        if (System.currentTimeMillis() >= warmupDeadlineMs) {
+                            Log.w(TAG, "No audio within warm-up window — VOICE_DOWNLINK blocked on this device")
+                            onBlocked?.invoke()
+                            break
+                        }
+                        continue
+                    }
+                    // First real audio — begin the segment here.
+                    sawAudio = true
                 }
-                firstChunk = false
 
                 segBuf.write(chunk)
                 accumulated += chunkLen

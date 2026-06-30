@@ -138,8 +138,28 @@ class AdbConnectionManager private constructor(ctx: Context)
 
     @Synchronized
     fun launchAudioBridge(tcpPort: Int): Boolean {
-        val port = savedPort
-        if (port < 0 || !keyFile.exists()) return false
+        if (!keyFile.exists()) return false
+
+        // Try the saved port first. Android rotates the wireless-debugging port
+        // whenever the network changes (new Wi-Fi, reconnect, reboot), which
+        // leaves savedPort stale and makes connect() fail with a null message.
+        // On failure we re-discover the live port via mDNS and retry once — the
+        // pairing keys persist across port changes, so no re-pairing is needed.
+        if (tryLaunchOnce(savedPort, tcpPort)) return true
+
+        Log.w(TAG, "Bridge launch failed on saved port $savedPort — re-discovering ADB port")
+        val fresh = rediscoverPortBlocking()
+        if (fresh != null && fresh > 0) {
+            savePort(fresh)
+            Log.i(TAG, "Re-discovered live ADB port: $fresh")
+            if (tryLaunchOnce(fresh, tcpPort)) return true
+        }
+        Log.e(TAG, "Bridge launch failed — could not reach adbd (is Wireless Debugging on?)")
+        return false
+    }
+
+    private fun tryLaunchOnce(port: Int, tcpPort: Int): Boolean {
+        if (port < 0) return false
         return try {
             val apkPath = appContext.packageCodePath
             // setsid creates a new session so the audio process survives ADB disconnect.
@@ -154,12 +174,30 @@ class AdbConnectionManager private constructor(ctx: Context)
             Thread.sleep(600)
             runCatching { stream.close() }
             disconnect()
-            Log.i(TAG, "Audio bridge launched → tcp:$tcpPort")
+            Log.i(TAG, "Audio bridge launched → tcp:$tcpPort (adb port $port)")
             true
         } catch (e: Exception) {
-            Log.e(TAG, "Bridge launch failed: ${e.message}")
+            Log.e(TAG, "Bridge launch failed on port $port: ${e.message}")
             runCatching { disconnect() }
             false
+        }
+    }
+
+    // Blocks the calling (background) thread while mDNS resolves the current
+    // _adb-tls-connect._tcp port. Safe here because launchAudioBridge runs on
+    // ShellAudioSession's worker thread, never the UI thread.
+    private fun rediscoverPortBlocking(): Int? {
+        val latch = java.util.concurrent.CountDownLatch(1)
+        val result = java.util.concurrent.atomic.AtomicInteger(-1)
+        NsdDiscovery.findMainPort(appContext, 8_000L) { port ->
+            if (port != null) result.set(port)
+            latch.countDown()
+        }
+        return try {
+            latch.await(10, java.util.concurrent.TimeUnit.SECONDS)
+            result.get().takeIf { it > 0 }
+        } catch (_: InterruptedException) {
+            null
         }
     }
 
